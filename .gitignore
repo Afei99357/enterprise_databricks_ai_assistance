@@ -19,3 +19,6 @@ build/
 # Source data belongs in governed storage and is not redistributed through Git.
 data/*
 !data/README.md
+
+# Local planning documents are intentionally never committed.
+plan/
