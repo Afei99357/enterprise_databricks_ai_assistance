@@ -1,0 +1,20 @@
+resources:
+  pipelines:
+    bronze_ingestion:
+      name: "[${bundle.target}] WNV Auto Loader Bronze Ingestion"
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      development: true
+      continuous: false
+      serverless: true
+      channel: CURRENT
+      libraries:
+        - file:
+            path: ../src/wnv_assistant/pipelines/bronze_ingestion.sql
+        - file:
+            path: ../src/wnv_assistant/pipelines/silver_transformations.sql
+        - file:
+            path: ../src/wnv_assistant/pipelines/gold_analytics.sql
+      tags:
+        project: wnv-assistant
+        layer: bronze

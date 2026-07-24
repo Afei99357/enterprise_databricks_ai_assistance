@@ -1,0 +1,20 @@
+bundle:
+  name: wnv-assistant
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for the WNV demonstration
+    default: eliao
+  schema:
+    description: Unity Catalog schema for the WNV demonstration
+    default: wnv_demo
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

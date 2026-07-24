@@ -1,0 +1,3 @@
+Year,Month,County,Mosquito,Date,FIPS,County_Seat_Longitude,County_Seat_Latitude,u10_1m_shift,v10_1m_shift,t2m_1m_shift,lai_hv_1m_shift,lai_lv_1m_shift,src_1m_shift,sf_1m_shift,sro_1m_shift,tp_1m_shift
+2002,8,adams,4,2002-08-01,17001,-91.379304,39.933675,0.1,0.2,300.0,2.3,2.9,0.01,0.0,0.001,0.002
+2002,8,adams,4,2002-08-01,17001,-91.379304,39.933675,0.1,0.2,300.0,2.3,2.9,0.01,0.0,0.001,0.002
