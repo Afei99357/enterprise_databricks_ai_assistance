@@ -178,6 +178,9 @@ def log_model(
         artifact_path=artifact_path,
         python_model=WNVAssistantModel(),
         artifacts=artifacts,
+        # Bundle the assistant package with the model. Model Serving adds this
+        # directory to Python's import path when it loads the registered model.
+        code_paths=[str(Path(__file__).parent)],
         signature=infer_signature(input_example, output_example),
         input_example=input_example,
         pip_requirements=[
