@@ -1,0 +1,38 @@
+resources:
+  serving_endpoints:
+    wnv_assistant:
+      name: "[${bundle.target}] WNV Assistant"
+      chat_model_configuration:
+        served_model_definition:
+          provider: "databricks"
+          model_id:
+            name: "${var.llm_provider}"
+            version: "${var.llm_version}"
+          task: "chat"
+        prompt_id_param: "prompt_id"
+        response_modalities: "text"
+      configs:
+        - served_models:
+            - name: "wnv_assistant_served"
+              external_model:
+                name: "${var.model_name}"
+                provider: "databricks"
+                task: "custom"
+                properties:
+                  no_input_evaluation: "true"
+              workload_size: "Small"
+              scale_to_zero: true
+
+variables:
+  model_name:
+    description: Unity Catalog registered model name (e.g. eliao.wnv_demo.wnv_assistant)
+    default: ""
+  model_version:
+    description: Model version to serve
+    default: "1"
+  llm_provider:
+    description: LLM provider for the chat model
+    default: "databricks"
+  llm_version:
+    description: LLM model version
+    default: "databricks-gpt-oss-20b"
