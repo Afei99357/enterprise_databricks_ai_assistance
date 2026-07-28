@@ -22,3 +22,4 @@ data/*
 
 # Local planning documents are intentionally never committed.
 plan/
+\nrag_wip/\n
