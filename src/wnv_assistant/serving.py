@@ -26,6 +26,7 @@ class WNVAssistantModel(PythonModel):
         from wnv_assistant.agent.orchestrator import Orchestrator
         from wnv_assistant.analytics.executor import executor_from_env
         from wnv_assistant.analytics.text_to_sql import TextToSQLTool
+        from wnv_assistant.conversation.store import store_from_env
         from wnv_assistant.llm.databricks_client import DatabricksLLMClient
 
         # Get config from model artifacts or environment
@@ -66,8 +67,9 @@ class WNVAssistantModel(PythonModel):
         # Initialize orchestrator
         self.orchestrator = Orchestrator(
             analytics_tool=self.analytics_tool,
-            llm_classify=lambda q: self.llm.classify_route(q),
+            llm_classify=lambda q, ctx="": self.llm.classify_route(q, ctx),
             llm_answer=lambda q, tr: self.llm.synthesize_answer(q, tr.answer, tr.data),
+            conversation_store=store_from_env(),
         )
 
     def predict(
