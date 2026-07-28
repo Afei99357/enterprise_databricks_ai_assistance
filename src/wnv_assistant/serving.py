@@ -11,8 +11,9 @@ from pathlib import Path
 
 import mlflow
 import pandas as pd
-from mlflow.models import infer_signature
+from mlflow.models import ModelSignature, infer_signature
 from mlflow.pyfunc import PythonModel
+from mlflow.types.schema import ColSpec, Schema
 
 
 class WNVAssistantModel(PythonModel):
@@ -173,6 +174,17 @@ def log_model(
             }
         ]
     )
+    output_signature = infer_signature(input_example, output_example)
+    signature = ModelSignature(
+        inputs=Schema(
+            [
+                ColSpec("string", "question"),
+                ColSpec("string", "conversation_id", required=False),
+                ColSpec("string", "user_id", required=False),
+            ]
+        ),
+        outputs=output_signature.outputs,
+    )
 
     model_info = mlflow.pyfunc.log_model(
         artifact_path=artifact_path,
@@ -181,7 +193,7 @@ def log_model(
         # Bundle the assistant package with the model. Model Serving adds this
         # directory to Python's import path when it loads the registered model.
         code_paths=[str(Path(__file__).parent)],
-        signature=infer_signature(input_example, output_example),
+        signature=signature,
         input_example=input_example,
         pip_requirements=[
             "databricks-sql-connector>=4.0.0",
