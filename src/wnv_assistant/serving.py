@@ -40,9 +40,15 @@ class WNVAssistantModel(PythonModel):
             with open(config_path) as f:
                 config = json.load(f)
             host = host or config.get("databricks_host")
-            token = token or config.get("databricks_token")
             warehouse_id = warehouse_id or config.get("databricks_warehouse_id")
             llm_endpoint = llm_endpoint or config.get("llm_endpoint")
+
+        if not host or not token:
+            raise RuntimeError(
+                "Set WNV_DATABRICKS_HOST and WNV_DATABRICKS_TOKEN in the "
+                "runtime environment. Do not store access tokens in MLflow "
+                "model artifacts."
+            )
 
         # Initialize LLM client
         self.llm = DatabricksLLMClient(
@@ -135,7 +141,7 @@ def log_model(
 
     Args:
         model_dir: Directory to store temporary model artifacts.
-        config: Optional config dict (host, warehouse_id, llm_endpoint).
+        config: Optional non-secret config dict (host, warehouse_id, llm_endpoint).
         artifact_path: Path within the MLflow run for the model.
 
     Returns:
