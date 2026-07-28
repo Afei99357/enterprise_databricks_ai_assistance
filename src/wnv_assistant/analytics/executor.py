@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class QueryResult:
     """Result of executing a SQL query."""
@@ -74,6 +75,13 @@ class Executor:
         from pyspark.sql import SparkSession
 
         spark = SparkSession.builder.getOrCreate()
+        # Generated SQL uses the approved, unqualified Gold table name. Set the
+        # session namespace explicitly so it resolves in Unity Catalog rather
+        # than the cluster's default (commonly hive_metastore.default).
+        catalog = self.catalog.replace("`", "``")
+        schema = self.schema.replace("`", "``")
+        spark.sql(f"USE CATALOG `{catalog}`")
+        spark.sql(f"USE SCHEMA `{schema}`")
         df = spark.sql(sql)
         rows = [tuple(r) for r in df.collect()]
         columns = list(df.columns)
