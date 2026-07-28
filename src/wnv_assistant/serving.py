@@ -7,10 +7,11 @@ MLflow model for Databricks Model Serving.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import mlflow
+import pandas as pd
+from mlflow.models import infer_signature
 from mlflow.pyfunc import PythonModel
 
 
@@ -75,8 +76,6 @@ class WNVAssistantModel(PythonModel):
         - dict matching AgentRequest fields
         - pandas DataFrame with "question" column
         """
-        from wnv_assistant.agent.models import AgentRequest
-
         # Parse input
         if isinstance(model_input, dict):
             question = model_input.get("question", "")
@@ -86,7 +85,11 @@ class WNVAssistantModel(PythonModel):
             # pandas DataFrame
             records = model_input.to_dict(orient="records")
             return [
-                self._handle_request(r.get("question", ""), r.get("conversation_id", ""), r.get("user_id", ""))
+                self._handle_request(
+                    r.get("question", ""),
+                    r.get("conversation_id", ""),
+                    r.get("user_id", ""),
+                )
                 for r in records
             ]
         else:
@@ -130,13 +133,15 @@ def log_model(
     """Log the WNV assistant as an MLflow model.
 
     Args:
-        model_dir: Directory to store the model artifacts.
+        model_dir: Directory to store temporary model artifacts.
         config: Optional config dict (host, warehouse_id, llm_endpoint).
         artifact_path: Path within the MLflow run for the model.
 
     Returns:
-        MLflow model URI.
+        Runs URI of the logged MLflow model.
     """
+    Path(model_dir).mkdir(parents=True, exist_ok=True)
+
     # Save config if provided
     if config:
         config_path = Path(model_dir) / "config.json"
@@ -146,15 +151,42 @@ def log_model(
     else:
         artifacts = {}
 
-    return mlflow.pyfunc.log_model(
+    # Unity Catalog requires a signature. Use DataFrame examples because that is
+    # the format Databricks Model Serving sends to a PyFunc model.
+    input_example = pd.DataFrame(
+        [
+            {
+                "question": "Show top 5 counties by mosquito activity in 2022",
+                "conversation_id": "",
+                "user_id": "",
+            }
+        ]
+    )
+    output_example = pd.DataFrame(
+        [
+            {
+                "answer": "Example response",
+                "route": "ANALYTICS",
+                "tool_results": [],
+                "warnings": [],
+                "insufficient_evidence": False,
+            }
+        ]
+    )
+
+    model_info = mlflow.pyfunc.log_model(
         artifact_path=artifact_path,
         python_model=WNVAssistantModel(),
         artifacts=artifacts,
+        signature=infer_signature(input_example, output_example),
+        input_example=input_example,
         pip_requirements=[
             "databricks-sql-connector>=4.0.0",
             "mlflow>=2.20.0",
+            "pandas>=1.5.0",
         ],
     )
+    return model_info.model_uri
 
 
 def load_model(model_uri: str):
