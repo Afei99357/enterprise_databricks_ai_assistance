@@ -18,7 +18,7 @@ from mlflow.pyfunc import PythonModel
 class WNVAssistantModel(PythonModel):
     """MLflow model that serves the WNV assistant agent."""
 
-    def load_context(self) -> None:
+    def load_context(self, context) -> None:
         """Initialize the agent components on model load."""
         import os
 
@@ -34,7 +34,7 @@ class WNVAssistantModel(PythonModel):
         llm_endpoint = os.environ.get("WNV_LLM_ENDPOINT", "databricks-gpt-oss-20b")
 
         # Try to load config from artifacts
-        config_path = self.artifacts.get("config")
+        config_path = context.artifacts.get("config")
         if config_path:
             with open(config_path) as f:
                 config = json.load(f)
