@@ -24,6 +24,7 @@ addopts = "-q"
 testpaths = ["tests"]
 markers = [
     "real_data: validates collected source files that are intentionally excluded from Git",
+    "integration: requires Databricks connectivity (set WNV_DATABRICKS_HOST and WNV_DATABRICKS_TOKEN)",
 ]
 
 [tool.ruff]

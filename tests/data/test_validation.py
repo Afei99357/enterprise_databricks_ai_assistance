@@ -12,7 +12,7 @@ from wnv_assistant.data_validation import (
     validate_source,
 )
 
-FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures" / "non_human"
+FIXTURE_DIRECTORY = Path(__file__).parent.parent / "fixtures" / "non_human"
 
 
 def _write_source(

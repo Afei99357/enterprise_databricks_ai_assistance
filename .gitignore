@@ -22,4 +22,6 @@ data/*
 
 # Local planning documents are intentionally never committed.
 plan/
-\nrag_wip/\n
+
+# RAG work-in-progress, not yet part of active milestones.
+rag_wip/
