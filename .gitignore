@@ -25,3 +25,5 @@ plan/
 
 # RAG work-in-progress, not yet part of active milestones.
 rag_wip/
+# Subagent-driven-development scratch workspace (ledger, briefs, review packages).
+.superpowers/
