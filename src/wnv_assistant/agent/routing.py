@@ -41,7 +41,8 @@ Classify each question into one of four categories:
 - OUT_OF_SCOPE: Medical diagnosis, personal health advice, predictions about
   future outbreaks, causal claims, or completely unrelated topics.
 
-Respond with JSON only: {"route": "ANALYTICS|DOCUMENT|MIXED|OUT_OF_SCOPE", "reason": "..."}
+Respond with JSON only:
+{"route": "ANALYTICS|DOCUMENT|MIXED|OUT_OF_SCOPE", "reason": "..."}
 """
 
 _ANALYTICS_KEYWORDS = [
@@ -68,7 +69,9 @@ def keyword_route(question: str) -> RouteDecision:
     q = question.lower()
 
     if any(kw in q for kw in _OUT_OF_SCOPE_KEYWORDS):
-        return RouteDecision(route="OUT_OF_SCOPE", reason="Medical/personal health question")
+        return RouteDecision(
+            route="OUT_OF_SCOPE", reason="Medical/personal health question"
+        )
 
     if any(kw in q for kw in _ANALYTICS_KEYWORDS):
         return RouteDecision(route="ANALYTICS", reason="Data/analytics question")
@@ -93,6 +96,8 @@ def classify_route(
     response = llm_client.chat(messages, max_tokens=200, temperature=0.0)
     try:
         data = json.loads(response.strip())
-        return RouteDecision(route=data.get("route", "ANALYTICS"), reason=data.get("reason", ""))
+        return RouteDecision(
+            route=data.get("route", "ANALYTICS"), reason=data.get("reason", "")
+        )
     except json.JSONDecodeError:
         return keyword_route(question)

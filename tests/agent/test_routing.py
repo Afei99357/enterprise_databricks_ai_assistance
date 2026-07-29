@@ -75,7 +75,9 @@ class TestClassifyRouteIntegration:
             and os.environ.get("WNV_DATABRICKS_TOKEN")
             and os.environ.get("WNV_LLM_ENDPOINT")
         ):
-            pytest.skip("set WNV_DATABRICKS_* and WNV_LLM_ENDPOINT for LLM integration tests")
+            pytest.skip(
+                "set WNV_DATABRICKS_* and WNV_LLM_ENDPOINT for LLM integration tests"
+            )
 
     def test_classify_route_returns_valid_route(self) -> None:
         import os
