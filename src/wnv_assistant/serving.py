@@ -26,7 +26,7 @@ class WNVAssistantModel(PythonModel):
         from wnv_assistant.agent.orchestrator import Orchestrator
         from wnv_assistant.agent.routing import classify_route
         from wnv_assistant.analytics.executor import executor_from_env
-        from wnv_assistant.analytics.text_to_sql import TextToSQLTool
+        from wnv_assistant.analytics.text_to_sql import TextToSQLTool, generate_sql
         from wnv_assistant.conversation.store import store_from_env
         from wnv_assistant.llm.databricks_client import DatabricksLLMClient
 
@@ -62,7 +62,7 @@ class WNVAssistantModel(PythonModel):
         # Initialize analytics tool
         self.analytics_tool = TextToSQLTool(
             executor=executor_from_env(),
-            llm_generate=lambda q, sys: self.llm.generate_sql(q, sys),
+            llm_generate=lambda q, sys: generate_sql(self.llm, q, sys),
         )
 
         # Initialize orchestrator

@@ -2,8 +2,36 @@
 
 from __future__ import annotations
 
+import pytest
+
 from wnv_assistant.analytics.text_to_sql import AnalyticsResult, TextToSQLTool
 from wnv_assistant.analytics.executor import Executor, QueryResult
+
+
+class FakeLLMClient:
+    """Fake LLMClient for testing generate_sql() without a real endpoint."""
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+    def chat(self, messages, *, max_tokens=2000, temperature=0.0) -> str:
+        return self.reply
+
+
+def test_generate_sql_strips_markdown_fences() -> None:
+    from wnv_assistant.analytics.text_to_sql import generate_sql
+
+    client = FakeLLMClient("```sql\nSELECT 1\n```")
+    sql = generate_sql(client, "trivial", "system prompt")
+    assert sql == "SELECT 1"
+
+
+def test_generate_sql_passes_through_plain_text() -> None:
+    from wnv_assistant.analytics.text_to_sql import generate_sql
+
+    client = FakeLLMClient("SELECT county FROM gold_county_month_wnv_weather LIMIT 5")
+    sql = generate_sql(client, "trivial", "system prompt")
+    assert sql == "SELECT county FROM gold_county_month_wnv_weather LIMIT 5"
 
 
 def _mock_llm_generate(question: str, system_prompt: str) -> str:
@@ -113,3 +141,33 @@ def test_format_schema_includes_allowed_columns() -> None:
     assert "mosquito_count" in schema
     assert "county" in schema
     assert "NULL" in schema or "not reported" in schema
+
+
+@pytest.mark.integration
+def test_generate_sql_integration() -> None:
+    """Real LLM call produces SQL-looking text (requires Databricks env)."""
+    import os
+
+    import pytest as _pytest
+
+    if not (
+        os.environ.get("WNV_DATABRICKS_HOST")
+        and os.environ.get("WNV_DATABRICKS_TOKEN")
+        and os.environ.get("WNV_LLM_ENDPOINT")
+    ):
+        _pytest.skip(
+            "set WNV_DATABRICKS_* and WNV_LLM_ENDPOINT for LLM integration tests"
+        )
+
+    from wnv_assistant.analytics.schema import format_schema_for_prompt
+    from wnv_assistant.analytics.text_to_sql import generate_sql
+    from wnv_assistant.llm.databricks_client import client_from_env
+
+    client = client_from_env(endpoint=os.environ["WNV_LLM_ENDPOINT"])
+    schema_prompt = format_schema_for_prompt()
+    sql = generate_sql(
+        client,
+        question="Show top counties by mosquito count",
+        system_prompt=f"Generate SQL. Return only the query.\n{schema_prompt}",
+    )
+    assert "SELECT" in sql.upper()

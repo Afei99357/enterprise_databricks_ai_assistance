@@ -13,11 +13,6 @@ class LLMClient(ABC):
         """Send a chat completion request and return the assistant's text response."""
         ...
 
-    @abstractmethod
-    def generate_sql(self, question: str, system_prompt: str) -> str:
-        """Generate SQL from a natural language question."""
-        ...
-
     def synthesize_answer(self, question: str, tool_answer: str, data: list[dict]) -> str:
         """Synthesize a final answer from tool results.
 

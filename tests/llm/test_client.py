@@ -30,15 +30,3 @@ class TestDatabricksClientIntegration:
             max_tokens=200,
         )
         assert response.strip()
-
-    def test_generate_sql_returns_sql(self) -> None:
-        """SQL generation returns something that looks like SQL."""
-        from wnv_assistant.llm.databricks_client import client_from_env
-
-        endpoint = __import__("os").environ.get("WNV_LLM_ENDPOINT", "")
-        client = client_from_env(endpoint=endpoint)
-        sql = client.generate_sql(
-            question="Show top counties by mosquito count",
-            system_prompt="Generate SQL. Return only the query.",
-        )
-        assert "SELECT" in sql.upper()

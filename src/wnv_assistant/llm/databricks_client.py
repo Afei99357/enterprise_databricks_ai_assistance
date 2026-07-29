@@ -102,27 +102,6 @@ class DatabricksLLMClient(LLMClient):
         content = result.get("content", "")
         return content if isinstance(content, str) else ""
 
-    def generate_sql(self, question: str, system_prompt: str) -> str:
-        """Generate SQL from a natural language question."""
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"Generate SQL for: {question}\n\n"
-                    "Return only the SQL query, no explanation."
-                ),
-            },
-        ]
-        response = self.chat(messages, max_tokens=1000, temperature=0.0)
-        # Strip markdown code blocks if present
-        if "```" in response:
-            response = response.split("```")[1]
-            if response.startswith("sql"):
-                response = response[3:]
-            response = response.strip("`\n")
-        return response.strip()
-
     def synthesize_answer(
         self, question: str, tool_answer: str, data: list[dict]
     ) -> str:

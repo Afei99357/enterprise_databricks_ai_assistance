@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from wnv_assistant.llm.client import LLMClient
+
 from .executor import Executor, executor_from_env
 from .schema import format_schema_for_prompt
 from .validator import validate
@@ -40,6 +42,27 @@ Rules:
 Schema:
 {schema}
 """
+
+
+def generate_sql(llm_client: LLMClient, question: str, system_prompt: str) -> str:
+    """Call the LLM to generate SQL, stripping markdown code fences if present."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Generate SQL for: {question}\n\n"
+                "Return only the SQL query, no explanation."
+            ),
+        },
+    ]
+    response = llm_client.chat(messages, max_tokens=1000, temperature=0.0)
+    if "```" in response:
+        response = response.split("```")[1]
+        if response.startswith("sql"):
+            response = response[3:]
+        response = response.strip("`\n")
+    return response.strip()
 
 
 class TextToSQLTool:
