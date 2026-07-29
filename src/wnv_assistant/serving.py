@@ -24,6 +24,7 @@ class WNVAssistantModel(PythonModel):
         import os
 
         from wnv_assistant.agent.orchestrator import Orchestrator
+        from wnv_assistant.agent.routing import classify_route
         from wnv_assistant.analytics.executor import executor_from_env
         from wnv_assistant.analytics.text_to_sql import TextToSQLTool
         from wnv_assistant.conversation.store import store_from_env
@@ -67,7 +68,7 @@ class WNVAssistantModel(PythonModel):
         # Initialize orchestrator
         self.orchestrator = Orchestrator(
             analytics_tool=self.analytics_tool,
-            llm_classify=lambda q, ctx="": self.llm.classify_route(q, ctx),
+            llm_classify=lambda q, ctx="": classify_route(self.llm, q, ctx),
             llm_answer=lambda q, tr: self.llm.synthesize_answer(q, tr.answer, tr.data),
             conversation_store=store_from_env(),
         )

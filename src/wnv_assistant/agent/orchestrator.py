@@ -9,7 +9,6 @@ from __future__ import annotations
 import inspect
 import re
 import uuid
-from dataclasses import dataclass
 
 from wnv_assistant.conversation.context import ConversationContextBuilder
 from wnv_assistant.conversation.models import (
@@ -23,33 +22,7 @@ from wnv_assistant.conversation.models import (
 from wnv_assistant.conversation.store import ConversationStore, InMemoryStore
 
 from .models import AgentRequest, AgentResponse, ToolResult
-
-
-@dataclass(frozen=True)
-class RouteDecision:
-    """Result of classifying a question."""
-
-    route: str  # ANALYTICS | DOCUMENT | OUT_OF_SCOPE
-    reason: str = ""
-
-
-ROUTING_SYSTEM_PROMPT = """\
-You are a routing agent for a West Nile virus (WNV) surveillance assistant.
-Classify each question into one of three categories:
-
-- ANALYTICS: Questions about counts, trends, comparisons, rankings, geography,
-  dates, weather relationships, or any question that can be answered from
-  structured surveillance data (bird, horse, mosquito counts by county and month).
-
-- DOCUMENT: Questions about what WNV is, how it spreads, prevention, symptoms,
-  treatment, CDC guidance, or public health recommendations.
-  (Document retrieval is not yet available.)
-
-- OUT_OF_SCOPE: Medical diagnosis, personal health advice, predictions about
-  future outbreaks, causal claims, or completely unrelated topics.
-
-Respond with JSON only: {"route": "ANALYTICS|DOCUMENT|OUT_OF_SCOPE", "reason": "..."}
-"""
+from .routing import RouteDecision, keyword_route
 
 ANSWER_SYSTEM_PROMPT = """\
 You are a West Nile virus (WNV) surveillance assistant for Illinois.
@@ -123,13 +96,13 @@ class Orchestrator:
             if isinstance(result, tuple) and len(result) == 2:
                 return RouteDecision(route=result[0], reason=result[1])
             return RouteDecision(route="ANALYTICS")
-        return _keyword_route(question)
+        return keyword_route(question)
 
     def _execute(
         self, route: str, question: str, context_prompt: str
     ) -> ToolResult | None:
         """Execute the appropriate tool."""
-        if route == "ANALYTICS" and self.analytics_tool:
+        if route in ("ANALYTICS", "MIXED") and self.analytics_tool:
             try:
                 result = _call_with_context(
                     self.analytics_tool.answer,
@@ -180,7 +153,7 @@ class Orchestrator:
                 warnings=["Document retrieval not yet implemented."],
             )
 
-        # ANALYTICS
+        # ANALYTICS or MIXED
         if tool_result and tool_result.success:
             answer = self._synthesize_answer(question, tool_result)
         else:
@@ -189,10 +162,17 @@ class Orchestrator:
                 "The query may have failed or returned no results."
             )
 
+        warnings = []
+        if decision.route == "MIXED":
+            warnings.append(
+                "Document evidence is not yet available; analytics portion only."
+            )
+
         return AgentResponse(
             answer=answer,
-            route="ANALYTICS",
+            route=decision.route,
             tool_results=[tool_result] if tool_result else [],
+            warnings=warnings,
             insufficient_evidence=not tool_result or not tool_result.data,
         )
 
@@ -249,7 +229,7 @@ class Orchestrator:
         )
 
         # Extract analytics state from tool result
-        if response.route == "ANALYTICS" and response.tool_results:
+        if response.route in ("ANALYTICS", "MIXED") and response.tool_results:
             tr = response.tool_results[0]
             if tr.success and tr.data:
                 assistant_turn = ConversationTurn(
@@ -332,53 +312,3 @@ def _call_with_context(callback, *args, context_prompt: str):
     except TypeError:
         return callback(*args)
     return callback(*args, context_prompt)
-
-
-def _keyword_route(question: str) -> RouteDecision:
-    """Simple keyword-based routing fallback (no LLM needed)."""
-    q = question.lower()
-
-    analytics_keywords = [
-        "how many",
-        "how much",
-        "count",
-        "total",
-        "compare",
-        "trend",
-        "which county",
-        "what year",
-        "highest",
-        "lowest",
-        "average",
-        "mosquito",
-        "bird",
-        "horse",
-        "case",
-        "activity",
-        "weather",
-        "temperature",
-        "precipitation",
-        "200",
-        "201",
-        "202",
-    ]
-
-    out_of_scope_keywords = [
-        "diagnose",
-        "am i",
-        "do i have",
-        "should i take",
-        "prescribe",
-        "treatment for me",
-        "my symptoms",
-    ]
-
-    if any(kw in q for kw in out_of_scope_keywords):
-        return RouteDecision(
-            route="OUT_OF_SCOPE", reason="Medical/personal health question"
-        )
-
-    if any(kw in q for kw in analytics_keywords):
-        return RouteDecision(route="ANALYTICS", reason="Data/analytics question")
-
-    return RouteDecision(route="DOCUMENT", reason="General knowledge question")

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from wnv_assistant.agent.models import AgentRequest
-from wnv_assistant.agent.orchestrator import Orchestrator, RouteDecision
+from wnv_assistant.agent.orchestrator import Orchestrator
+from wnv_assistant.agent.routing import RouteDecision
 from wnv_assistant.analytics.text_to_sql import AnalyticsResult
 from wnv_assistant.conversation.store import InMemoryStore
 

@@ -18,14 +18,6 @@ class LLMClient(ABC):
         """Generate SQL from a natural language question."""
         ...
 
-    def classify_route(self, question: str) -> tuple[str, str]:
-        """Classify a question into a route. Returns (route, reason).
-
-        Override in subclasses for LLM-based routing. Falls back to keyword routing.
-        """
-        from .databricks_client import _keyword_route
-        return _keyword_route(question)
-
     def synthesize_answer(self, question: str, tool_answer: str, data: list[dict]) -> str:
         """Synthesize a final answer from tool results.
 

@@ -95,7 +95,7 @@ class ConversationContextBuilder:
         for turn in reversed(turns):
             if (
                 turn.role == "assistant"
-                and turn.route == Route.ANALYTICS
+                and turn.route in (Route.ANALYTICS, Route.MIXED)
                 and turn.analytics_state is not None
             ):
                 return turn.analytics_state

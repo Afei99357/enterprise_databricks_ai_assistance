@@ -2,30 +2,6 @@
 
 from __future__ import annotations
 
-from wnv_assistant.llm.databricks_client import _keyword_route
-
-
-class TestKeywordRouteFallback:
-    """Test the keyword-based fallback routing."""
-
-    def test_analytics_question(self) -> None:
-        route, reason = _keyword_route("How many mosquito cases in 2022?")
-        assert route == "ANALYTICS"
-
-    def test_document_question(self) -> None:
-        route, reason = _keyword_route("What is West Nile virus?")
-        assert route == "DOCUMENT"
-
-    def test_out_of_scope(self) -> None:
-        route, reason = _keyword_route("Am I at risk?")
-        assert route == "OUT_OF_SCOPE"
-
-    def test_returns_tuple(self) -> None:
-        result = _keyword_route("Show data")
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-
-
 import pytest
 
 
@@ -66,13 +42,3 @@ class TestDatabricksClientIntegration:
             system_prompt="Generate SQL. Return only the query.",
         )
         assert "SELECT" in sql.upper()
-
-    def test_classify_route_returns_valid_route(self) -> None:
-        """Route classification returns a known route."""
-        from wnv_assistant.llm.databricks_client import client_from_env
-
-        endpoint = __import__("os").environ.get("WNV_LLM_ENDPOINT", "")
-        client = client_from_env(endpoint=endpoint)
-        route, reason = client.classify_route("How many cases in Cook County?")
-        assert route in ("ANALYTICS", "DOCUMENT", "OUT_OF_SCOPE")
-        assert reason

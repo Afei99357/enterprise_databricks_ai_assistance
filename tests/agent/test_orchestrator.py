@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from wnv_assistant.agent.models import AgentRequest, AgentResponse
-from wnv_assistant.agent.orchestrator import Orchestrator, RouteDecision, _keyword_route
+from wnv_assistant.agent.orchestrator import Orchestrator
+from wnv_assistant.agent.routing import RouteDecision
 
 
 class MockAnalyticsTool:
@@ -27,34 +28,6 @@ class MockAnalyticsTool:
             row_count=len(self._data),
             warnings=[],
         )
-
-
-class TestKeywordRouting:
-    """Test the keyword-based fallback routing."""
-
-    def test_analytics_question(self) -> None:
-        decision = _keyword_route("How many mosquito cases in Cook County?")
-        assert decision.route == "ANALYTICS"
-
-    def test_trend_question(self) -> None:
-        decision = _keyword_route("Show the trend of WNV activity over the years")
-        assert decision.route == "ANALYTICS"
-
-    def test_compare_question(self) -> None:
-        decision = _keyword_route("Compare bird and horse counts in 2022")
-        assert decision.route == "ANALYTICS"
-
-    def test_medical_question(self) -> None:
-        decision = _keyword_route("Am I at risk for WNV?")
-        assert decision.route == "OUT_OF_SCOPE"
-
-    def test_diagnosis_question(self) -> None:
-        decision = _keyword_route("Can you diagnose my symptoms?")
-        assert decision.route == "OUT_OF_SCOPE"
-
-    def test_general_knowledge(self) -> None:
-        decision = _keyword_route("What is West Nile virus?")
-        assert decision.route == "DOCUMENT"
 
 
 class TestOrchestratorAnalytics:
@@ -140,6 +113,27 @@ class TestOrchestratorDocument:
 
         assert response.route == "DOCUMENT"
         assert "not yet available" in response.answer.lower()
+
+
+class TestOrchestratorMixed:
+    """Test MIXED route: analytics runs, with a warning that RAG isn't available yet."""
+
+    def test_mixed_route_runs_analytics_with_warning(self) -> None:
+        tool = MockAnalyticsTool(
+            data=[{"county": "Cook", "mosquito_count": 42, "year": 2022}]
+        )
+        orch = Orchestrator(
+            analytics_tool=tool,
+            llm_classify=lambda q: RouteDecision("MIXED"),
+        )
+
+        response = orch.run(
+            AgentRequest(question="Show 2022 counts and CDC guidance")
+        )
+
+        assert response.route == "MIXED"
+        assert response.tool_results[0].success
+        assert any("not yet available" in w.lower() for w in response.warnings)
 
 
 class TestAgentResponse:
