@@ -102,43 +102,6 @@ class DatabricksLLMClient(LLMClient):
         content = result.get("content", "")
         return content if isinstance(content, str) else ""
 
-    def synthesize_answer(
-        self, question: str, tool_answer: str, data: list[dict]
-    ) -> str:
-        """Synthesize a final answer from tool results."""
-        # Sanitize data for JSON (handle date/datetime objects)
-        from datetime import date, datetime
-
-        sanitized = []
-        for row in data[:5]:
-            sanitized.append(
-                {
-                    k: (v.isoformat() if isinstance(v, (date, datetime)) else v)
-                    for k, v in row.items()
-                }
-            )
-        data_preview = json.dumps(sanitized, indent=2)
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a WNV surveillance assistant. Write a clear, "
-                    "concise answer "
-                    "from the data below. Describe associations, not causation. "
-                    "Never diagnose. If data is empty, say so plainly."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Question: {question}\n\nData:\n{data_preview}\n\n"
-                    f"Tool summary: {tool_answer}"
-                ),
-            },
-        ]
-        response = self.chat(messages, max_tokens=500, temperature=0.0)
-        return response.strip() or tool_answer
-
 
 def client_from_env(
     endpoint: str = "databricks-meta-llama-3-3-70b-instruct",

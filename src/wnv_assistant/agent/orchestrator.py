@@ -7,6 +7,7 @@ and synthesizes the final answer. Supports conversation memory for follow-ups.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import uuid
 
@@ -20,6 +21,7 @@ from wnv_assistant.conversation.models import (
     Route,
 )
 from wnv_assistant.conversation.store import ConversationStore, InMemoryStore
+from wnv_assistant.llm.client import LLMClient
 
 from .models import AgentRequest, AgentResponse, ToolResult
 from .routing import RouteDecision, keyword_route
@@ -35,6 +37,42 @@ Rules:
 - Be honest when the data doesn't support an answer
 - Include specific numbers from the data when available
 """
+
+
+def synthesize_answer(
+    llm_client: LLMClient, question: str, tool_answer: str, data: list[dict]
+) -> str:
+    """Call the LLM to write a final answer from tool results."""
+    from datetime import date, datetime
+
+    sanitized = []
+    for row in data[:5]:
+        sanitized.append(
+            {
+                k: (v.isoformat() if isinstance(v, (date, datetime)) else v)
+                for k, v in row.items()
+            }
+        )
+    data_preview = json.dumps(sanitized, indent=2)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a WNV surveillance assistant. Write a clear, "
+                "concise answer from the data below. Describe associations, "
+                "not causation. Never diagnose. If data is empty, say so plainly."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Question: {question}\n\nData:\n{data_preview}\n\n"
+                f"Tool summary: {tool_answer}"
+            ),
+        },
+    ]
+    response = llm_client.chat(messages, max_tokens=500, temperature=0.0)
+    return response.strip() or tool_answer
 
 
 class Orchestrator:

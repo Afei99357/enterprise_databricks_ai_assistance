@@ -136,6 +136,39 @@ class TestOrchestratorMixed:
         assert any("not yet available" in w.lower() for w in response.warnings)
 
 
+class FakeLLMClient:
+    """Fake LLMClient for testing synthesize_answer() without a real endpoint."""
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.last_messages: list[dict] | None = None
+
+    def chat(self, messages, *, max_tokens=2000, temperature=0.0) -> str:
+        self.last_messages = messages
+        return self.reply
+
+
+class TestSynthesizeAnswer:
+    def test_uses_llm_response_when_present(self) -> None:
+        from wnv_assistant.agent.orchestrator import synthesize_answer
+
+        client = FakeLLMClient("Cook County had 42 mosquito pools test positive.")
+        answer = synthesize_answer(
+            client,
+            "How many in Cook?",
+            "Found 1 result",
+            [{"county": "Cook", "count": 42}],
+        )
+        assert answer == "Cook County had 42 mosquito pools test positive."
+
+    def test_falls_back_to_tool_answer_on_empty_response(self) -> None:
+        from wnv_assistant.agent.orchestrator import synthesize_answer
+
+        client = FakeLLMClient("   ")
+        answer = synthesize_answer(client, "q", "tool answer", [])
+        assert answer == "tool answer"
+
+
 class TestAgentResponse:
     """Test response serialization."""
 

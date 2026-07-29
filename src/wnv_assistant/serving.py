@@ -23,7 +23,7 @@ class WNVAssistantModel(PythonModel):
         """Initialize the agent components on model load."""
         import os
 
-        from wnv_assistant.agent.orchestrator import Orchestrator
+        from wnv_assistant.agent.orchestrator import Orchestrator, synthesize_answer
         from wnv_assistant.agent.routing import classify_route
         from wnv_assistant.analytics.executor import executor_from_env
         from wnv_assistant.analytics.text_to_sql import TextToSQLTool, generate_sql
@@ -69,7 +69,7 @@ class WNVAssistantModel(PythonModel):
         self.orchestrator = Orchestrator(
             analytics_tool=self.analytics_tool,
             llm_classify=lambda q, ctx="": classify_route(self.llm, q, ctx),
-            llm_answer=lambda q, tr: self.llm.synthesize_answer(q, tr.answer, tr.data),
+            llm_answer=lambda q, tr: synthesize_answer(self.llm, q, tr.answer, tr.data),
             conversation_store=store_from_env(),
         )
 
