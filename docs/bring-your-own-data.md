@@ -58,19 +58,21 @@ changes — the harness is schema-agnostic.
 
 ## What stays the same
 
-- `agent/orchestrator.py`, `agent/routing.py` — the routing/orchestration
-  policy doesn't know or care what table it's querying.
-- `llm/client.py`, `llm/databricks_client.py` — the LLM transport layer.
-- `analytics/text_to_sql.py` — the SQL-generation flow (prompt assembly,
-  JSON-envelope parsing, validation, execution) is schema-agnostic; only
-  the schema text injected into the prompt changes.
-- `conversation/` — conversation memory works off `AnalyticsQuerySpec`
-  (metric/aggregation/dimensions/filters), which is a generic shape, not
-  tied to WNV's specific column names.
+- `src/wnv_assistant/agent/orchestrator.py`, `src/wnv_assistant/agent/routing.py`
+  — the routing/orchestration policy doesn't know or care what table it's
+  querying.
+- `src/wnv_assistant/llm/client.py`, `src/wnv_assistant/llm/databricks_client.py`
+  — the LLM transport layer.
+- `src/wnv_assistant/analytics/text_to_sql.py` — the SQL-generation flow
+  (prompt assembly, JSON-envelope parsing, validation, execution) is
+  schema-agnostic; only the schema text injected into the prompt changes.
+- `src/wnv_assistant/conversation/` — conversation memory works off
+  `AnalyticsQuerySpec` (metric/aggregation/dimensions/filters), which is a
+  generic shape, not tied to WNV's specific column names.
 
 ## What doesn't generalize yet
 
-- `serving.py`'s `WNVAssistantModel` name and its `_handle_request` /
+- `src/wnv_assistant/serving.py`'s `WNVAssistantModel` name and its `_handle_request` /
   `AgentResponse` shape are specific to this project's response contract.
   Renaming the class is cosmetic; the response shape (`answer`, `route`,
   `tool_results`, `warnings`, `insufficient_evidence`) is a reasonable
