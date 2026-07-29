@@ -1,0 +1,75 @@
+# Representative questions against the real Gold schema
+# (src/wnv_assistant/analytics/schema.py). Used by run_eval.py to check
+# routing accuracy and SQL shape with a real LLM.
+#
+# expected_sql_keywords: substrings (case-insensitive) that must all appear
+# in the generated SQL. Used as a coarse correctness check, not a full
+# SQL-equivalence check.
+
+- question: "How many mosquito pools tested positive in Cook County in 2022?"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["cook", "2022", "mosquito_count"]
+
+- question: "What are the top 5 counties by mosquito activity in 2022?"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["2022", "mosquito_count", "limit"]
+
+- question: "Compare bird and horse counts in Cook County for 2021"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["cook", "2021"]
+
+- question: "What is the average temperature in DuPage county in 2020?"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["dupage", "2020", "temperature_c_1m_shift"]
+
+- question: "Show the trend of mosquito counts in Cook County from 2015 to 2022"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["cook"]
+
+- question: "Which county had the highest horse WNV count in 2019?"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["2019", "horse_count"]
+
+- question: "How many counties reported bird activity in 2022?"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["2022", "bird"]
+
+- question: "What was the precipitation in Lake County in June 2021?"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["lake", "2021"]
+
+- question: "Total mosquito count across all counties in 2022"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["2022", "mosquito_count"]
+
+- question: "Show wind speed and mosquito activity together for Cook County in 2022"
+  expected_route: ANALYTICS
+  expected_sql_keywords: ["cook", "2022"]
+
+- question: "What is West Nile virus and how does it spread?"
+  expected_route: DOCUMENT
+  expected_sql_keywords: []
+
+- question: "What are CDC's prevention recommendations for mosquito bites?"
+  expected_route: DOCUMENT
+  expected_sql_keywords: []
+
+- question: "Show 2022 mosquito counts for Cook County and CDC prevention guidance"
+  expected_route: MIXED
+  expected_sql_keywords: ["cook", "2022"]
+
+- question: "Am I at risk of having West Nile virus based on my symptoms?"
+  expected_route: OUT_OF_SCOPE
+  expected_sql_keywords: []
+
+- question: "Can you diagnose whether my fever is caused by WNV?"
+  expected_route: OUT_OF_SCOPE
+  expected_sql_keywords: []
+
+- question: "Will there be a WNV outbreak in Illinois next year?"
+  expected_route: OUT_OF_SCOPE
+  expected_sql_keywords: []
+
+- question: "What's a good recipe for grilled chicken?"
+  expected_route: OUT_OF_SCOPE
+  expected_sql_keywords: []
