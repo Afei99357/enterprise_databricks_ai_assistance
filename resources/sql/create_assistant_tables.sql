@@ -18,8 +18,5 @@ CREATE TABLE IF NOT EXISTS eliao.wnv_demo.assistant_turns (
 
     created_at TIMESTAMP NOT NULL
 )
-USING DELTA;
-
--- Optional: create indexes for faster lookups
-CREATE INDEX IF NOT EXISTS idx_turns_user_conversation
-ON eliao.wnv_demo.assistant_turns (user_id, conversation_id);
+USING DELTA
+CLUSTER BY (user_id, conversation_id);
