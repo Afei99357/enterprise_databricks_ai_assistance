@@ -24,6 +24,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+python_files = ["test_*.py", "run_eval.py"]
 markers = [
     "real_data: validates collected source files that are intentionally excluded from Git",
     "integration: requires Databricks connectivity (set WNV_DATABRICKS_HOST and WNV_DATABRICKS_TOKEN)",
