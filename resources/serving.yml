@@ -1,0 +1,31 @@
+resources:
+  serving_endpoints:
+    wnv_assistant:
+      name: "wnv-assistant-${bundle.target}"
+      config:
+        served_entities:
+          - entity_name: "${var.model_name}"
+            entity_version: "${var.model_version}"
+            workload_size: "Small"
+            scale_to_zero_enabled: true
+            environment_vars:
+              WNV_DATABRICKS_WAREHOUSE_ID: "${var.warehouse_id}"
+              WNV_LLM_ENDPOINT: "${var.llm_endpoint}"
+              WNV_DATABRICKS_TOKEN: "{{secrets/${var.secret_scope}/token}}"
+
+variables:
+  model_name:
+    description: Unity Catalog registered model name to serve
+    default: "${var.catalog}.${var.schema}.wnv_assistant"
+  model_version:
+    description: Registered model version to serve
+    default: "1"
+  warehouse_id:
+    description: SQL Warehouse ID the served model uses for analytics queries
+    default: ""
+  llm_endpoint:
+    description: Databricks Model Serving endpoint used for LLM calls
+    default: "databricks-gpt-oss-20b"
+  secret_scope:
+    description: Databricks secret scope holding the serving token (see notes below)
+    default: "wnv_assistant"
