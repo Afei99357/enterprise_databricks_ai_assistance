@@ -1,13 +1,26 @@
 """Orchestrator agent for the WNV assistant.
 
 Routes questions to the appropriate tool (analytics, document, or rejection)
-and synthesizes the final answer.
+and synthesizes the final answer. Supports conversation memory for follow-ups.
 """
 
 from __future__ import annotations
 
-import json
+import inspect
+import re
+import uuid
 from dataclasses import dataclass
+
+from wnv_assistant.conversation.context import ConversationContextBuilder
+from wnv_assistant.conversation.models import (
+    AnalyticsState,
+    ConversationTurn,
+    QueryFilters,
+    QueryProjection,
+    ResultContext,
+    Route,
+)
+from wnv_assistant.conversation.store import ConversationStore, InMemoryStore
 
 from .models import AgentRequest, AgentResponse, ToolResult
 
@@ -52,30 +65,104 @@ Rules:
 
 
 class Orchestrator:
-    """Routes questions to tools and synthesizes answers."""
+    """Routes questions to tools and synthesizes answers.
+
+    Supports conversation memory: loads history, builds context,
+    passes to LLM prompts, saves turns after processing.
+    """
 
     def __init__(
         self,
         analytics_tool: object | None = None,
         llm_classify: callable | None = None,
         llm_answer: callable | None = None,
+        conversation_store: ConversationStore | None = None,
     ) -> None:
         self.analytics_tool = analytics_tool
         self._llm_classify = llm_classify
         self._llm_answer = llm_answer
+        self._store = conversation_store or InMemoryStore()
+        self._context_builder = ConversationContextBuilder()
 
     def run(self, request: AgentRequest) -> AgentResponse:
-        """Process a request: route -> tool -> synthesize."""
-        # Step 1: Route
-        decision = self._route(request.question)
+        """Process a request: load context -> route -> tool -> synthesize -> save."""
+        # Step 0: Load conversation context
+        turns = []
+        if self._has_conversation_identity(request):
+            turns = self._store.get_recent_turns(
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                limit=10,
+            )
+        context = self._context_builder.build(turns)
+        context_prompt = self._context_builder.render_context_prompt(context)
+
+        # Step 1: Route (with context)
+        decision = self._route(request.question, context_prompt)
 
         # Step 2: Execute tool
-        tool_result = self._execute(decision.route, request.question)
+        tool_result = self._execute(decision.route, request.question, context_prompt)
 
         # Step 3: Synthesize answer
+        response = self._build_response(decision, request.question, tool_result)
+
+        # Step 4: Save turns
+        if self._has_conversation_identity(request):
+            self._save_turns(request, response, decision)
+
+        return response
+
+    def _route(self, question: str, context_prompt: str) -> RouteDecision:
+        """Classify a question into a route."""
+        if self._llm_classify:
+            result = _call_with_context(
+                self._llm_classify, question, context_prompt=context_prompt
+            )
+            if isinstance(result, RouteDecision):
+                return result
+            if isinstance(result, tuple) and len(result) == 2:
+                return RouteDecision(route=result[0], reason=result[1])
+            return RouteDecision(route="ANALYTICS")
+        return _keyword_route(question)
+
+    def _execute(
+        self, route: str, question: str, context_prompt: str
+    ) -> ToolResult | None:
+        """Execute the appropriate tool."""
+        if route == "ANALYTICS" and self.analytics_tool:
+            try:
+                result = _call_with_context(
+                    self.analytics_tool.answer,
+                    question,
+                    context_prompt=context_prompt,
+                )
+                return ToolResult(
+                    tool_name="text_to_sql",
+                    success=True,
+                    data=result.data,
+                    columns=result.columns,
+                    answer=result.answer,
+                    generated_sql=result.generated_sql,
+                    error="",
+                )
+            except Exception as e:
+                return ToolResult(
+                    tool_name="text_to_sql",
+                    success=False,
+                    error=str(e),
+                )
+        return None
+
+    def _build_response(
+        self,
+        decision: RouteDecision,
+        question: str,
+        tool_result: ToolResult | None,
+    ) -> AgentResponse:
+        """Build the final agent response."""
         if decision.route == "OUT_OF_SCOPE":
             return AgentResponse(
-                answer=self._out_of_scope_answer(request.question),
+                answer=self._out_of_scope_answer(question),
                 route="OUT_OF_SCOPE",
                 tool_results=[],
                 warnings=["Question is outside the scope of WNV surveillance data."],
@@ -95,9 +182,12 @@ class Orchestrator:
 
         # ANALYTICS
         if tool_result and tool_result.success:
-            answer = self._synthesize_answer(request.question, tool_result)
+            answer = self._synthesize_answer(question, tool_result)
         else:
-            answer = "I couldn't retrieve the data. The query may have failed or returned no results."
+            answer = (
+                "I couldn't retrieve the data. "
+                "The query may have failed or returned no results."
+            )
 
         return AgentResponse(
             answer=answer,
@@ -106,45 +196,10 @@ class Orchestrator:
             insufficient_evidence=not tool_result or not tool_result.data,
         )
 
-    def _route(self, question: str) -> RouteDecision:
-        """Classify a question into a route."""
-        if self._llm_classify:
-            result = self._llm_classify(question)
-            # Handle both RouteDecision and tuple returns
-            if isinstance(result, RouteDecision):
-                return result
-            if isinstance(result, tuple) and len(result) == 2:
-                return RouteDecision(route=result[0], reason=result[1])
-            return RouteDecision(route="ANALYTICS")
-        return _keyword_route(question)
-
-    def _execute(self, route: str, question: str) -> ToolResult | None:
-        """Execute the appropriate tool."""
-        if route == "ANALYTICS" and self.analytics_tool:
-            try:
-                result = self.analytics_tool.answer(question)
-                return ToolResult(
-                    tool_name="text_to_sql",
-                    success=True,
-                    data=result.data,
-                    columns=result.columns,
-                    answer=result.answer,
-                    generated_sql=result.generated_sql,
-                    error="",
-                )
-            except Exception as e:
-                return ToolResult(
-                    tool_name="text_to_sql",
-                    success=False,
-                    error=str(e),
-                )
-        return None
-
     def _synthesize_answer(self, question: str, tool_result: ToolResult) -> str:
         """Synthesize a final answer from tool results."""
         if self._llm_answer:
             return self._llm_answer(question, tool_result)
-        # Fallback: use the tool's own answer
         return tool_result.answer
 
     def _out_of_scope_answer(self, question: str) -> str:
@@ -156,25 +211,172 @@ class Orchestrator:
             "Try asking about WNV activity in a specific county or time period."
         )
 
+    @staticmethod
+    def _has_conversation_identity(request: AgentRequest) -> bool:
+        """Only persist history when both caller identity fields are present."""
+        return bool(request.user_id and request.conversation_id)
+
+    def _save_turns(
+        self,
+        request: AgentRequest,
+        response: AgentResponse,
+        decision: RouteDecision,
+    ) -> None:
+        """Save user and assistant turns to conversation store."""
+        turn_number = self._next_turn_number(request)
+
+        # User turn
+        user_turn = ConversationTurn(
+            turn_id=str(uuid.uuid4()),
+            turn_number=turn_number,
+            role="user",
+            content=request.question,
+        )
+
+        # Assistant turn
+        assistant_turn = ConversationTurn(
+            turn_id=str(uuid.uuid4()),
+            turn_number=turn_number + 1,
+            role="assistant",
+            content=response.answer,
+            route=Route(response.route),
+            generated_sql=(
+                response.tool_results[0].generated_sql
+                if response.tool_results and response.tool_results[0].generated_sql
+                else None
+            ),
+            result_summary=response.answer[:1500],
+        )
+
+        # Extract analytics state from tool result
+        if response.route == "ANALYTICS" and response.tool_results:
+            tr = response.tool_results[0]
+            if tr.success and tr.data:
+                assistant_turn = ConversationTurn(
+                    **{
+                        **assistant_turn.__dict__,
+                        "analytics_state": self._extract_state(tr),
+                    },
+                )
+
+        self._store.append_turns(
+            user_id=request.user_id,
+            conversation_id=request.conversation_id,
+            turns=[user_turn, assistant_turn],
+        )
+
+    def _next_turn_number(self, request: AgentRequest) -> int:
+        """Get the next turn number for this conversation."""
+        turns = self._store.get_recent_turns(
+            user_id=request.user_id,
+            conversation_id=request.conversation_id,
+            limit=100,
+        )
+        if not turns:
+            return 1
+        return max(t.turn_number for t in turns) + 1
+
+    def _extract_state(self, tool_result: ToolResult) -> AnalyticsState | None:
+        """Extract analytics state from tool result."""
+        if not tool_result.data:
+            return None
+
+        # Extract counties from result data
+        counties = list(
+            {row.get("county") for row in tool_result.data if row.get("county")}
+        )[:10]
+
+        years = {
+            int(value)
+            for value in re.findall(
+                r"\byear\s*=\s*'?([12]\d{3})'?",
+                tool_result.generated_sql,
+                flags=re.IGNORECASE,
+            )
+        }
+        years.update(
+            int(row["year"]) for row in tool_result.data if row.get("year") is not None
+        )
+        limit_match = re.search(
+            r"\bLIMIT\s+(\d+)", tool_result.generated_sql, flags=re.IGNORECASE
+        )
+        aggregation_match = re.search(
+            r"\b(SUM|AVG|COUNT|MIN|MAX)\s*\(\s*(\w+)",
+            tool_result.generated_sql,
+            flags=re.IGNORECASE,
+        )
+
+        return AnalyticsState(
+            filters=QueryFilters(counties=counties, years=sorted(years)),
+            projection=QueryProjection(
+                metric=(
+                    aggregation_match.group(2).lower() if aggregation_match else None
+                ),
+                aggregation=(
+                    aggregation_match.group(1).upper() if aggregation_match else None
+                ),
+                limit=int(limit_match.group(1)) if limit_match else None,
+            ),
+            result_context=ResultContext(
+                returned_counties=counties,
+                returned_years=sorted(years),
+                row_count=len(tool_result.data),
+            ),
+        )
+
+
+def _call_with_context(callback, *args, context_prompt: str):
+    """Invoke new context-aware callbacks while supporting existing callbacks."""
+    try:
+        inspect.signature(callback).bind(*args, context_prompt)
+    except TypeError:
+        return callback(*args)
+    return callback(*args, context_prompt)
+
 
 def _keyword_route(question: str) -> RouteDecision:
     """Simple keyword-based routing fallback (no LLM needed)."""
     q = question.lower()
 
     analytics_keywords = [
-        "how many", "how much", "count", "total", "compare", "trend",
-        "which county", "what year", "highest", "lowest", "average",
-        "mosquito", "bird", "horse", "case", "activity", "weather",
-        "temperature", "precipitation", "200", "201", "202",
+        "how many",
+        "how much",
+        "count",
+        "total",
+        "compare",
+        "trend",
+        "which county",
+        "what year",
+        "highest",
+        "lowest",
+        "average",
+        "mosquito",
+        "bird",
+        "horse",
+        "case",
+        "activity",
+        "weather",
+        "temperature",
+        "precipitation",
+        "200",
+        "201",
+        "202",
     ]
 
     out_of_scope_keywords = [
-        "diagnose", "am i", "do i have", "should i take", "prescribe",
-        "treatment for me", "my symptoms",
+        "diagnose",
+        "am i",
+        "do i have",
+        "should i take",
+        "prescribe",
+        "treatment for me",
+        "my symptoms",
     ]
 
     if any(kw in q for kw in out_of_scope_keywords):
-        return RouteDecision(route="OUT_OF_SCOPE", reason="Medical/personal health question")
+        return RouteDecision(
+            route="OUT_OF_SCOPE", reason="Medical/personal health question"
+        )
 
     if any(kw in q for kw in analytics_keywords):
         return RouteDecision(route="ANALYTICS", reason="Data/analytics question")
