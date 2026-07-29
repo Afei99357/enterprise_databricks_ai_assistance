@@ -8,15 +8,12 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
 import uuid
 
 from wnv_assistant.conversation.context import ConversationContextBuilder
 from wnv_assistant.conversation.models import (
     AnalyticsState,
     ConversationTurn,
-    QueryFilters,
-    QueryProjection,
     ResultContext,
     Route,
 )
@@ -155,6 +152,7 @@ class Orchestrator:
                     answer=result.answer,
                     generated_sql=result.generated_sql,
                     error="",
+                    query_spec=result.query_spec,
                 )
             except Exception as e:
                 return ToolResult(
@@ -295,51 +293,29 @@ class Orchestrator:
         return max(t.turn_number for t in turns) + 1
 
     def _extract_state(self, tool_result: ToolResult) -> AnalyticsState | None:
-        """Extract analytics state from tool result."""
-        if not tool_result.data:
+        """Build analytics state from the structured query spec the LLM emitted.
+
+        Returns None when no spec was produced (e.g. the LLM didn't follow
+        the JSON envelope), rather than guessing intent from the SQL text or
+        the returned rows.
+        """
+        if not tool_result.query_spec:
             return None
-
-        # Extract counties from result data
-        counties = list(
-            {row.get("county") for row in tool_result.data if row.get("county")}
-        )[:10]
-
-        years = {
-            int(value)
-            for value in re.findall(
-                r"\byear\s*=\s*'?([12]\d{3})'?",
-                tool_result.generated_sql,
-                flags=re.IGNORECASE,
-            )
-        }
-        years.update(
-            int(row["year"]) for row in tool_result.data if row.get("year") is not None
-        )
-        limit_match = re.search(
-            r"\bLIMIT\s+(\d+)", tool_result.generated_sql, flags=re.IGNORECASE
-        )
-        aggregation_match = re.search(
-            r"\b(SUM|AVG|COUNT|MIN|MAX)\s*\(\s*(\w+)",
-            tool_result.generated_sql,
-            flags=re.IGNORECASE,
+        return tool_result.query_spec.to_analytics_state(
+            self._build_result_context(tool_result.data)
         )
 
-        return AnalyticsState(
-            filters=QueryFilters(counties=counties, years=sorted(years)),
-            projection=QueryProjection(
-                metric=(
-                    aggregation_match.group(2).lower() if aggregation_match else None
-                ),
-                aggregation=(
-                    aggregation_match.group(1).upper() if aggregation_match else None
-                ),
-                limit=int(limit_match.group(1)) if limit_match else None,
-            ),
-            result_context=ResultContext(
-                returned_counties=counties,
-                returned_years=sorted(years),
-                row_count=len(tool_result.data),
-            ),
+    @staticmethod
+    def _build_result_context(data: list[dict]) -> ResultContext:
+        """Record what actually came back, for display/reference only."""
+        counties = list({row["county"] for row in data if row.get("county")})[:10]
+        years = sorted(
+            {int(row["year"]) for row in data if row.get("year") is not None}
+        )
+        return ResultContext(
+            returned_counties=counties,
+            returned_years=years,
+            row_count=len(data),
         )
 
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from wnv_assistant.analytics.text_to_sql import AnalyticsResult, TextToSQLTool
 from wnv_assistant.analytics.executor import Executor, QueryResult
+from wnv_assistant.analytics.text_to_sql import AnalyticsResult, TextToSQLTool
+from wnv_assistant.conversation.models import AnalyticsQuerySpec
 
 
 class FakeLLMClient:
@@ -18,30 +19,72 @@ class FakeLLMClient:
         return self.reply
 
 
-def test_generate_sql_strips_markdown_fences() -> None:
+def test_generate_sql_parses_json_envelope() -> None:
     from wnv_assistant.analytics.text_to_sql import generate_sql
+    from wnv_assistant.conversation.models import AnalyticsQuerySpec
 
-    client = FakeLLMClient("```sql\nSELECT 1\n```")
-    sql = generate_sql(client, "trivial", "system prompt")
-    assert sql == "SELECT 1"
+    reply = (
+        '{"sql": "SELECT county FROM gold_county_month_wnv_weather LIMIT 5", '
+        '"query_spec": {"metric": "mosquito_count", "aggregation": "SUM", '
+        '"dimensions": ["county"], "filters": {"year": [2022]}, '
+        '"order_by": "total", "order_direction": "DESC", "limit": 5}}'
+    )
+    client = FakeLLMClient(reply)
+    sql, spec = generate_sql(client, "trivial", "system prompt")
+
+    assert sql == "SELECT county FROM gold_county_month_wnv_weather LIMIT 5"
+    assert isinstance(spec, AnalyticsQuerySpec)
+    assert spec.metric == "mosquito_count"
+    assert spec.filters == {"year": [2022]}
 
 
-def test_generate_sql_passes_through_plain_text() -> None:
+def test_generate_sql_falls_back_when_not_json() -> None:
+    """A model that ignores the envelope instruction still gets its SQL used."""
     from wnv_assistant.analytics.text_to_sql import generate_sql
 
     client = FakeLLMClient("SELECT county FROM gold_county_month_wnv_weather LIMIT 5")
-    sql = generate_sql(client, "trivial", "system prompt")
+    sql, spec = generate_sql(client, "trivial", "system prompt")
+
     assert sql == "SELECT county FROM gold_county_month_wnv_weather LIMIT 5"
+    assert spec is None
 
 
-def _mock_llm_generate(question: str, system_prompt: str) -> str:
-    """Return known-good SQL for test questions."""
+def _mock_llm_generate(
+    question: str, system_prompt: str
+) -> tuple[str, AnalyticsQuerySpec | None]:
+    """Return known-good SQL and query spec for test questions."""
     if "Cook County" in question or "cook" in question.lower():
-        return "SELECT county, mosquito_count, year FROM gold_county_month_wnv_weather WHERE county = 'cook' LIMIT 100"
+        return (
+            "SELECT county, mosquito_count, year FROM gold_county_month_wnv_weather "
+            "WHERE county = 'cook' LIMIT 100",
+            AnalyticsQuerySpec(
+                metric="mosquito_count",
+                aggregation="",
+                dimensions=["county", "year"],
+                filters={"county": ["cook"]},
+                limit=100,
+            ),
+        )
     if "highest" in question.lower() or "top" in question.lower():
-        return "SELECT county, SUM(mosquito_count) AS total FROM gold_county_month_wnv_weather GROUP BY county ORDER BY total DESC LIMIT 10"
-    # Default safe query
-    return "SELECT county, year, mosquito_count FROM gold_county_month_wnv_weather LIMIT 10"
+        return (
+            "SELECT county, SUM(mosquito_count) AS total "
+            "FROM gold_county_month_wnv_weather "
+            "GROUP BY county ORDER BY total DESC LIMIT 10",
+            AnalyticsQuerySpec(
+                metric="mosquito_count",
+                aggregation="SUM",
+                dimensions=["county"],
+                filters={},
+                order_by="total",
+                order_direction="DESC",
+                limit=10,
+            ),
+        )
+    return (
+        "SELECT county, year, mosquito_count "
+        "FROM gold_county_month_wnv_weather LIMIT 10",
+        None,
+    )
 
 
 def _mock_executor_failing(*args, **kwargs) -> Executor:
@@ -78,8 +121,8 @@ def test_answer_with_valid_sql() -> None:
 
 def test_answer_with_validation_failure() -> None:
     """Tool returns safe rejection when SQL fails validation."""
-    def bad_llm(question: str, system_prompt: str) -> str:
-        return "DROP TABLE gold_county_month_wnv_weather"
+    def bad_llm(question: str, system_prompt: str) -> tuple[str, None]:
+        return "DROP TABLE gold_county_month_wnv_weather", None
 
     tool = TextToSQLTool(
         executor=_mock_executor_failing(),
@@ -132,6 +175,26 @@ def test_generated_sql_is_preserved() -> None:
     assert "gold_county_month_wnv_weather" in result.generated_sql
 
 
+def test_query_spec_is_preserved() -> None:
+    """The structured query spec produced by the LLM reaches AnalyticsResult."""
+    tool = TextToSQLTool(
+        executor=_mock_executor_failing(),
+        llm_generate=_mock_llm_generate,
+    )
+    tool.executor.execute = lambda sql: QueryResult(
+        columns=["county", "total"],
+        rows=[("cook", 42)],
+        row_count=1,
+        query=sql,
+    )
+
+    result = tool.answer("Show the highest counties")
+
+    assert result.query_spec is not None
+    assert result.query_spec.metric == "mosquito_count"
+    assert result.query_spec.aggregation == "SUM"
+
+
 def test_format_schema_includes_allowed_columns() -> None:
     """Schema prompt includes column descriptions."""
     from wnv_assistant.analytics.schema import format_schema_for_prompt
@@ -165,7 +228,7 @@ def test_generate_sql_integration() -> None:
 
     client = client_from_env(endpoint=os.environ["WNV_LLM_ENDPOINT"])
     schema_prompt = format_schema_for_prompt()
-    sql = generate_sql(
+    sql, _spec = generate_sql(
         client,
         question="Show top counties by mosquito count",
         system_prompt=f"Generate SQL. Return only the query.\n{schema_prompt}",

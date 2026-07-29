@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from wnv_assistant.conversation.models import AnalyticsQuerySpec
+
 
 @dataclass(frozen=True)
 class AgentRequest:
@@ -26,6 +28,7 @@ class ToolResult:
     generated_sql: str = ""
     citations: list[dict] = field(default_factory=list)
     error: str = ""
+    query_spec: AnalyticsQuerySpec | None = None
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from wnv_assistant.agent.models import AgentRequest
 from wnv_assistant.agent.orchestrator import Orchestrator
 from wnv_assistant.agent.routing import RouteDecision
 from wnv_assistant.analytics.text_to_sql import AnalyticsResult
+from wnv_assistant.conversation.models import AnalyticsQuerySpec
 from wnv_assistant.conversation.store import InMemoryStore
 
 
@@ -29,6 +30,13 @@ class ContextAwareAnalyticsTool:
             ),
             row_count=1,
             warnings=[],
+            query_spec=AnalyticsQuerySpec(
+                metric="mosquito_count",
+                aggregation="SUM",
+                dimensions=["county"],
+                filters={"year": [year]},
+                limit=5,
+            ),
         )
 
 
