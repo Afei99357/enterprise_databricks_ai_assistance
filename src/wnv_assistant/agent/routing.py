@@ -57,6 +57,8 @@ _OUT_OF_SCOPE_KEYWORDS = [
     "treatment for me", "my symptoms",
 ]
 
+_VALID_ROUTES = {"ANALYTICS", "DOCUMENT", "MIXED", "OUT_OF_SCOPE"}
+
 
 def keyword_route(question: str) -> RouteDecision:
     """Simple keyword-based routing fallback used when the LLM call fails.
@@ -96,8 +98,9 @@ def classify_route(
     response = llm_client.chat(messages, max_tokens=200, temperature=0.0)
     try:
         data = json.loads(response.strip())
-        return RouteDecision(
-            route=data.get("route", "ANALYTICS"), reason=data.get("reason", "")
-        )
+        route = data.get("route", "ANALYTICS")
+        if route not in _VALID_ROUTES:
+            return keyword_route(question)
+        return RouteDecision(route=route, reason=data.get("reason", ""))
     except json.JSONDecodeError:
         return keyword_route(question)

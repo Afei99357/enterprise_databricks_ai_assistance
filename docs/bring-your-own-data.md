@@ -66,12 +66,22 @@ changes — the harness is schema-agnostic.
 - `src/wnv_assistant/analytics/text_to_sql.py` — the SQL-generation flow
   (prompt assembly, JSON-envelope parsing, validation, execution) is
   schema-agnostic; only the schema text injected into the prompt changes.
-- `src/wnv_assistant/conversation/` — conversation memory works off
-  `AnalyticsQuerySpec` (metric/aggregation/dimensions/filters), which is a
-  generic shape, not tied to WNV's specific column names.
 
 ## What doesn't generalize yet
 
+- `src/wnv_assistant/conversation/` — conversation memory is WNV-shaped, not
+  schema-agnostic. `QueryFilters` (in `conversation/models.py`) hardcodes the
+  dimension fields `years`/`months`/`counties`/`states`/`source_types`, and
+  `AnalyticsQuerySpec.to_analytics_state()` reads those same WNV-specific
+  keys (`year`/`month`/`county`/`state`/`source_type`) out of the LLM's
+  `filters` dict. `agent/orchestrator.py`'s `_build_result_context()` likewise
+  reads `row["county"]`/`row["year"]` by name. A different single-table
+  dataset (e.g. sales by `region`/`quarter`) wouldn't crash — it would just
+  silently fail to populate any of these fields, so conversation memory
+  would stop tracking filter/result-context state for that data. Point this
+  at another schema and expect to update `QueryFilters`,
+  `AnalyticsQuerySpec.to_analytics_state`, and `_build_result_context` to
+  match your own dimension names.
 - `src/wnv_assistant/serving.py`'s `WNVAssistantModel` name and its `_handle_request` /
   `AgentResponse` shape are specific to this project's response contract.
   Renaming the class is cosmetic; the response shape (`answer`, `route`,

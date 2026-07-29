@@ -9,6 +9,7 @@ resources:
             workload_size: "Small"
             scale_to_zero_enabled: true
             environment_vars:
+              WNV_DATABRICKS_HOST: "${var.databricks_host}"
               WNV_DATABRICKS_WAREHOUSE_ID: "${var.warehouse_id}"
               WNV_LLM_ENDPOINT: "${var.llm_endpoint}"
               WNV_DATABRICKS_TOKEN: "{{secrets/${var.secret_scope}/token}}"
@@ -20,6 +21,9 @@ variables:
   model_version:
     description: Registered model version to serve
     default: "1"
+  databricks_host:
+    description: Databricks workspace URL the served model uses for analytics queries
+    default: ""
   warehouse_id:
     description: SQL Warehouse ID the served model uses for analytics queries
     default: ""

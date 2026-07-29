@@ -55,6 +55,18 @@ class TestClassifyRoute:
         decision = classify_route(client, "How many mosquito cases in 2022?")
         assert decision.route == "ANALYTICS"
 
+    def test_falls_back_to_keyword_route_on_invalid_route_value(self) -> None:
+        client = FakeLLMClient('{"route": "analytics", "reason": "lowercase"}')
+        decision = classify_route(client, "How many mosquito cases in 2022?")
+        assert decision.route == "ANALYTICS"
+        assert decision.reason == "Data/analytics question"
+
+    def test_falls_back_to_keyword_route_on_hallucinated_route_value(self) -> None:
+        client = FakeLLMClient('{"route": "DATA", "reason": "made up"}')
+        decision = classify_route(client, "What is West Nile virus?")
+        assert decision.route == "DOCUMENT"
+        assert decision.reason == "General knowledge question"
+
     def test_includes_context_in_system_prompt(self) -> None:
         client = FakeLLMClient('{"route": "ANALYTICS", "reason": "x"}')
         classify_route(client, "What about 2021?", context_prompt="year: [2022]")
