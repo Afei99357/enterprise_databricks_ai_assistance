@@ -27,9 +27,15 @@ that shaped this design:
   across all test pages, including correctly distinguishing genuine
   fill-in-the-blank template pages from normal narrative pages (every
   hosted model false-flagged a normal page as a template).
-- A T4 GPU is sufficient to serve a 4B vision model, and since ingestion
-  only needs to run on a schedule or manual trigger (not as an always-on
-  endpoint), GPU cost is not a real constraint at this scale.
+- A GPU is sufficient to serve a 4B vision model, and since ingestion only
+  needs to run on a schedule or manual trigger (not as an always-on
+  endpoint), GPU cost is not a real constraint at this scale. (Initially
+  assumed T4/`GPU_SMALL` would be enough — corrected during implementation
+  to A10/`GPU_MEDIUM`, since Databricks documents that as the default tier
+  for general inference and uses A10 in their own worked example for a
+  *smaller* vision-language model; vision models need more headroom than a
+  same-size text model because page-image inputs decode into a lot of
+  vision tokens, consuming KV-cache memory beyond just the model weights.)
 - Given Qwen3-VL's validated accuracy and the low GPU cost, the design uses
   vision-OCR for every page rather than a text-layer-extraction-first
   approach — simpler, and the earlier concern (vision-OCR is less reliable
@@ -43,7 +49,7 @@ that shaped this design:
 
 ## 1. Model serving
 
-**Decision.** Deploy Qwen3-VL 4B as a custom, GPU-backed (T4) Databricks
+**Decision.** Deploy Qwen3-VL 4B as a custom, GPU-backed (A10, `GPU_MEDIUM`) Databricks
 Model Serving endpoint. The ingestion pipeline calls it by a configurable
 endpoint name (`WNV_VISION_ENDPOINT`), the same pattern already used for
 `WNV_LLM_ENDPOINT` — swapping models later is a config change, not a code
