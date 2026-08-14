@@ -68,18 +68,40 @@ Per new document, per page:
 
 1. **Extract** — `pdfplumber.extract_text()` for the page's text, and
    `page.extract_tables()` for any detected tables, rendered as markdown
-   tables and appended to the page's text rather than left as separate
-   structured data — keeps the chunk shape uniform (plain markdown per
-   chunk) and avoids a second chunk type for what's still fundamentally the
-   same page of content.
+   tables and appended to the page's text. Tables get separated back out
+   for their own chunking treatment in step 3 — this step just produces one
+   combined markdown string per page, the raw material chunking works from.
 2. **Template-flag deterministically** — regex the extracted text for
    `[INSERT`-style bracket patterns to flag genuine fill-in-the-blank
    template pages. Same check as before, now against `pdfplumber` output
    instead of OCR output — the regex itself doesn't change.
-3. **Chunk** — one chunk per page (`chunk_type = body`). Paragraph-aware
-   splitting only applies if a page's extracted text exceeds a length
-   threshold well beyond what real documents tested so far have produced
-   (~4,500 characters was the longest page seen in earlier testing).
+3. **Chunk** — **revised 2026-08-14**, after comparing prior projects and
+   researching current RAG chunking practice (see the implementation
+   plan's Task 3 for the full reasoning). Recursive character splitting
+   (paragraph → sentence → raw character, the industry-standard default —
+   a direct benchmark across 50 real academic papers found it beats
+   semantic/embedding-similarity chunking outright, 69% vs. 54% accuracy),
+   at a calibrated ~1,200-character target with ~150-character overlap
+   between chunks (within the commonly-cited 200–500 token / 10–20%
+   overlap range), not the original one-chunk-per-page design. Two
+   refinements beyond plain recursive splitting:
+   - **Table-aware splitting.** A detected markdown table block is
+     separated from surrounding narrative text and chunked by row instead
+     of by paragraph, repeating the header + separator row in every
+     resulting chunk so a table chunk is always self-contained and
+     interpretable on its own, never a headerless fragment of rows.
+     `chunk_type` is now actively `body` or `table` (previously always
+     `body`).
+   - **Adjacent-page boundary context.** A real risk with per-page
+     chunking: a paragraph split by a page break becomes two separate,
+     independently-embedded fragments, and an isolated half-sentence can
+     embed poorly enough to rank below the top-k cutoff in search — never
+     getting selected at all, so retrieval's adjacent-page expansion
+     (§3) never even gets a chance to compensate. The fix: a small, fixed
+     slice of the adjacent page's text (~300 characters) is folded onto
+     the start/end of a page's text before chunking — not a new chunk,
+     not full-document concatenation, no paragraph-continuation detection
+     needed. Chunks stay attributed to a single `page_number`.
 4. **Embed** — call a text-embedding endpoint (Databricks Foundation Model
    API, `databricks-gte-large-en`) per chunk.
 5. **Store** — write chunks + embeddings + metadata to `document_chunks`
@@ -100,15 +122,15 @@ structured Gold table:
 | `chunk_id` | STRING (PK) | hash of document name + page + chunk type |
 | `document_name` | STRING | source filename |
 | `page_number` | INT | 1-indexed |
-| `chunk_type` | STRING | `body` (only type for now — see Open Questions) |
+| `chunk_type` | STRING | `body` \| `table` |
 | `text` | STRING | extracted markdown for this chunk |
 | `embedding` | ARRAY&lt;FLOAT&gt; | text-embedding vector |
 | `is_template_page` | BOOLEAN | from the deterministic regex check |
 | `ingested_at` | TIMESTAMP | |
 
-`chunk_type` keeps room for a future `figure_caption` (or similar) type if
-diagram handling is ever added back — dropped from active use for now, not
-removed from the schema shape.
+`chunk_type` is `table` for a chunk produced by the row-based table
+splitter (§1, step 3), `body` otherwise. Also keeps room for a future
+`figure_caption` (or similar) type if diagram handling is ever added back.
 
 ## 3. Retrieval
 

@@ -54,8 +54,11 @@ embeddings), Delta Lake, Databricks Asset Bundles.
 - `src/wnv_assistant/documents/template_flag.py` — deterministic
   `[INSERT...]`-style regex check. One function: `is_template_page`.
 - `src/wnv_assistant/documents/chunking.py` — `DocumentChunk` dataclass,
-  `make_chunk_id`, `chunk_page` (one chunk per page, paragraph-aware split
-  for oversized pages).
+  `make_chunk_id`, `chunk_page` (recursive paragraph -> sentence ->
+  character splitting at a calibrated target size, table-aware row
+  splitting with repeated headers, adjacent-page boundary context folded
+  in before chunking — see Task 3's design note for why this replaced an
+  earlier whole-page-as-one-chunk approach).
 - `src/wnv_assistant/documents/embedding.py` — `EmbeddingClient` (mirrors
   `DatabricksLLMClient`'s shape) and `embed_from_env`.
 - `src/wnv_assistant/documents/ingest.py` — `EmbeddedChunk` dataclass,
@@ -316,6 +319,44 @@ git commit -m "Add deterministic template-page detection (documents.template_fla
 
 ### Task 3: Chunking (`chunking.py`)
 
+**Design (revised from real-world research + comparison against prior
+projects — see conversation history dated 2026-08-14):** recursive
+character/token splitting is the industry-standard default for RAG
+(LangChain's own default splitter), and for research-paper-style
+documents specifically, a direct benchmark across 50 real academic papers
+found it *beats* semantic (embedding-similarity) chunking outright (69%
+vs. 54% accuracy) — so this uses recursive splitting, not semantic
+chunking. Concretely:
+
+- **Recursive fallback hierarchy: paragraph → sentence → raw character.**
+  Paragraphs (`\n\n`-separated) are packed greedily into
+  `_TARGET_CHUNK_CHARS`-sized chunks. A paragraph that alone exceeds the
+  target gets split by sentence; a single sentence that still exceeds it
+  falls back to raw character slicing. This is the standard "recursive
+  character splitting" pattern.
+- **Calibrated target size + overlap.** `_TARGET_CHUNK_CHARS = 1200`
+  (~300 tokens) and `_CHUNK_OVERLAP_CHARS = 150` (~12.5%), both within
+  the commonly-cited 200–500 token / 10–20% overlap range for general
+  text — not the whole-page-sized chunks the first draft of this task
+  used.
+- **Boundary context, not full cross-page merging.** A real risk with
+  per-page chunking: a paragraph split by a page break becomes two
+  separate, independently-embedded fragments, and a fragment can rank too
+  low in similarity search to ever get selected (an isolated half-sentence
+  embeds worse than a complete thought). The fix here is a small, fixed
+  slice of the *adjacent* page's text (`_BOUNDARY_CONTEXT_CHARS = 300`)
+  folded onto the start/end of a page's text *before* chunking — not a
+  new chunk, not full-document concatenation, no paragraph-continuation
+  detection needed. This keeps chunks still attributable to a single
+  `page_number` (no `start_page`/`end_page` schema change needed) while
+  meaningfully reducing the isolated-fragment risk.
+- **Tables get a separate row-based strategy, not paragraph splitting.**
+  Detected via consecutive `|`-prefixed lines with a real separator row.
+  Split by row if oversized, with the header + separator row *repeated in
+  every resulting chunk* — a table chunk is always self-contained and
+  interpretable on its own, never a headerless fragment of rows.
+  `chunk_type` is now `"body"` or `"table"` (previously always `"body"`).
+
 **Files:**
 - Create: `src/wnv_assistant/documents/chunking.py`
 - Test: `tests/documents/test_chunking.py`
@@ -325,8 +366,9 @@ git commit -m "Add deterministic template-page detection (documents.template_fla
   document_name: str, page_number: int, chunk_type: str, text: str,
   is_template_page: bool`), `make_chunk_id(document_name: str, page_number:
   int, chunk_type: str, part: int = 0) -> str`, `chunk_page(document_name:
-  str, page_number: int, text: str, is_template: bool) -> list[DocumentChunk]`.
-  Consumed by `ingest.py` (Task 5) and `storage.py` (Task 6).
+  str, page_number: int, text: str, is_template: bool, *, prev_page_text:
+  str = "", next_page_text: str = "") -> list[DocumentChunk]`. Consumed by
+  `ingest.py` (Task 5) and `storage.py` (Task 6).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -372,28 +414,74 @@ class TestChunkPage:
         assert chunk.chunk_type == "body"
         assert chunk.text == "Some page text."
         assert chunk.is_template_page is False
-        assert chunk.chunk_id == make_chunk_id("toolkit.pdf", 5, "body")
 
     def test_template_flag_is_carried_through(self) -> None:
         chunks = chunk_page("toolkit.pdf", 1, "[INSERT NAME]", is_template=True)
         assert chunks[0].is_template_page is True
 
-    def test_oversized_page_splits_by_paragraph(self) -> None:
-        paragraph = "A" * 3000
-        text = f"{paragraph}\n\n{paragraph}\n\n{paragraph}"
+    def test_oversized_page_splits_into_multiple_chunks(self) -> None:
+        paragraph = "A" * 800
+        text = "\n\n".join([paragraph] * 5)  # 4000+ chars, well over target
         chunks = chunk_page("report.pdf", 2, text, is_template=False)
         assert len(chunks) > 1
-        # Every paragraph's text is preserved somewhere in the split chunks.
-        assert sum(c.text.count("A") for c in chunks) == 3000 * 3
-        # Each split chunk stays under the threshold.
-        assert all(len(c.text) <= 4500 for c in chunks)
-        # Chunk ids are distinct across the split parts.
+        assert all(c.chunk_type == "body" for c in chunks)
+        assert all(len(c.text) <= 1200 + 150 for c in chunks)  # target + overlap slack
         assert len({c.chunk_id for c in chunks}) == len(chunks)
 
-    def test_exactly_at_threshold_stays_one_chunk(self) -> None:
-        text = "A" * 4500
+    def test_short_page_stays_one_chunk(self) -> None:
+        text = "A" * 1000  # under _TARGET_CHUNK_CHARS
         chunks = chunk_page("report.pdf", 3, text, is_template=False)
         assert len(chunks) == 1
+
+    def test_boundary_context_is_folded_into_first_chunk(self) -> None:
+        chunks = chunk_page(
+            "report.pdf",
+            4,
+            "This page's own text.",
+            is_template=False,
+            prev_page_text="Trailing context from the previous page.",
+        )
+        assert "Trailing context from the previous page." in chunks[0].text
+        assert "This page's own text." in chunks[0].text
+
+    def test_boundary_context_is_folded_into_last_chunk(self) -> None:
+        chunks = chunk_page(
+            "report.pdf",
+            4,
+            "This page's own text.",
+            is_template=False,
+            next_page_text="Leading context from the next page.",
+        )
+        assert "Leading context from the next page." in chunks[-1].text
+
+    def test_markdown_table_splits_by_row_with_repeated_header(self) -> None:
+        header = "| County | Cases |\n| --- | --- |"
+        # 150 rows -> ~2,800 chars total, safely over the 1,200-char
+        # target (60 rows was tried and measured at only ~1,090 chars --
+        # not enough margin to actually force a split).
+        rows = [f"| County{i} | {i} |" for i in range(150)]
+        table_text = header + "\n" + "\n".join(rows)
+        chunks = chunk_page("surveillance.pdf", 7, table_text, is_template=False)
+        assert len(chunks) > 1
+        assert all(c.chunk_type == "table" for c in chunks)
+        # Every chunk repeats the header -- self-contained on its own.
+        assert all("| County | Cases |" in c.text for c in chunks)
+
+    def test_small_table_stays_one_chunk(self) -> None:
+        table_text = "| County | Cases |\n| --- | --- |\n| Cook | 12 |"
+        chunks = chunk_page("surveillance.pdf", 8, table_text, is_template=False)
+        assert len(chunks) == 1
+        assert chunks[0].chunk_type == "table"
+
+    def test_mixed_text_and_table_produces_both_chunk_types(self) -> None:
+        text = (
+            "Some narrative text before the table.\n\n"
+            "| County | Cases |\n| --- | --- |\n| Cook | 12 |\n\n"
+            "Some narrative text after the table."
+        )
+        chunks = chunk_page("mixed.pdf", 9, text, is_template=False)
+        types = {c.chunk_type for c in chunks}
+        assert types == {"body", "table"}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -406,14 +494,26 @@ Expected: FAIL — `ModuleNotFoundError`
 Create `src/wnv_assistant/documents/chunking.py`:
 
 ```python
-"""Chunks extracted page text into DocumentChunk records."""
+"""Chunks extracted page text into DocumentChunk records.
+
+Recursive character splitting (paragraph -> sentence -> raw character)
+with a calibrated target size and overlap, plus a table-aware row-based
+strategy for markdown tables. See Task 3's design note in the
+implementation plan for why this replaced an earlier
+whole-page-as-one-chunk design.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 
-_MAX_CHUNK_CHARS = 4500  # longest single-page extraction seen in testing
+_TARGET_CHUNK_CHARS = 1200  # ~300 tokens
+_CHUNK_OVERLAP_CHARS = 150  # ~12.5%
+_BOUNDARY_CONTEXT_CHARS = 300  # adjacent-page slice folded in before chunking
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
 @dataclass(frozen=True)
@@ -423,7 +523,7 @@ class DocumentChunk:
     chunk_id: str
     document_name: str
     page_number: int
-    chunk_type: str
+    chunk_type: str  # "body" | "table"
     text: str
     is_template_page: bool
 
@@ -437,75 +537,186 @@ def make_chunk_id(
 
 
 def chunk_page(
-    document_name: str, page_number: int, text: str, is_template: bool
+    document_name: str,
+    page_number: int,
+    text: str,
+    is_template: bool,
+    *,
+    prev_page_text: str = "",
+    next_page_text: str = "",
 ) -> list[DocumentChunk]:
     """Chunk one page's extracted text.
 
-    One chunk per page by default. Paragraph-aware splitting only applies
-    if the text exceeds _MAX_CHUNK_CHARS -- well beyond what real
-    documents tested so far have produced.
+    A small trailing slice of the previous page and leading slice of the
+    next page are folded onto this page's text before chunking -- not
+    stored as separate chunks, just context that keeps a chunk near a
+    page boundary from being embedded as an isolated, possibly
+    mid-sentence fragment.
     """
-    if len(text) <= _MAX_CHUNK_CHARS:
-        return [
-            DocumentChunk(
-                chunk_id=make_chunk_id(document_name, page_number, "body"),
-                document_name=document_name,
-                page_number=page_number,
-                chunk_type="body",
-                text=text,
-                is_template_page=is_template,
-            )
-        ]
-    return _split_by_paragraph(document_name, page_number, text, is_template)
+    prefix = prev_page_text[-_BOUNDARY_CONTEXT_CHARS:] if prev_page_text else ""
+    suffix = next_page_text[:_BOUNDARY_CONTEXT_CHARS] if next_page_text else ""
+    context_text = "\n\n".join(p for p in [prefix, text, suffix] if p)
 
-
-def _split_by_paragraph(
-    document_name: str, page_number: int, text: str, is_template: bool
-) -> list[DocumentChunk]:
-    """Greedily group paragraphs into chunks under _MAX_CHUNK_CHARS."""
-    paragraphs = [p for p in text.split("\n\n") if p.strip()]
     chunks: list[DocumentChunk] = []
-    current: list[str] = []
-    current_len = 0
     part = 0
-
-    def flush() -> None:
-        nonlocal part
-        if not current:
-            return
-        chunks.append(
-            DocumentChunk(
-                chunk_id=make_chunk_id(document_name, page_number, "body", part),
-                document_name=document_name,
-                page_number=page_number,
-                chunk_type="body",
-                text="\n\n".join(current),
-                is_template_page=is_template,
-            )
+    for chunk_type, content in _split_into_segments(context_text):
+        if not content.strip():
+            continue
+        pieces = (
+            _chunk_table(content, _TARGET_CHUNK_CHARS)
+            if chunk_type == "table"
+            else _split_text_recursive(content, _TARGET_CHUNK_CHARS, _CHUNK_OVERLAP_CHARS)
         )
-        part += 1
+        for piece in pieces:
+            chunks.append(
+                DocumentChunk(
+                    chunk_id=make_chunk_id(document_name, page_number, chunk_type, part),
+                    document_name=document_name,
+                    page_number=page_number,
+                    chunk_type=chunk_type,
+                    text=piece,
+                    is_template_page=is_template,
+                )
+            )
+            part += 1
+    return chunks
 
+
+def _split_text_recursive(text: str, target: int, overlap: int) -> list[str]:
+    """Greedily pack paragraphs into ~target-sized chunks with overlap.
+
+    Falls back to sentence-level splitting for any single paragraph that
+    alone exceeds target, then to raw character splitting as a last
+    resort -- the standard recursive character splitting hierarchy.
+    """
+    paragraphs = [p for p in text.split("\n\n") if p.strip()]
+    pieces: list[str] = []
     for paragraph in paragraphs:
-        if current and current_len + len(paragraph) > _MAX_CHUNK_CHARS:
-            flush()
-            current = []
-            current_len = 0
-        current.append(paragraph)
-        current_len += len(paragraph)
-    flush()
+        if len(paragraph) <= target:
+            pieces.append(paragraph)
+        else:
+            pieces.extend(_split_oversized_paragraph(paragraph, target))
+
+    chunks: list[str] = []
+    current = ""
+    for piece in pieces:
+        if current and len(current) + 2 + len(piece) > target:
+            chunks.append(current)
+            tail = current[-overlap:] if len(current) > overlap else current
+            current = f"{tail}\n\n{piece}"
+        else:
+            current = f"{current}\n\n{piece}" if current else piece
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_oversized_paragraph(paragraph: str, target: int) -> list[str]:
+    """Split a paragraph too big for one chunk: sentences, then characters."""
+    sentences = [s for s in _SENTENCE_SPLIT.split(paragraph) if s.strip()]
+    if len(sentences) > 1:
+        pieces: list[str] = []
+        current = ""
+        for sentence in sentences:
+            if current and len(current) + 1 + len(sentence) > target:
+                pieces.append(current)
+                current = sentence
+            else:
+                current = f"{current} {sentence}" if current else sentence
+        if current:
+            pieces.append(current)
+        return pieces
+    # A single sentence still too big -- fall back to raw character slices.
+    return [paragraph[i : i + target] for i in range(0, len(paragraph), target)]
+
+
+def _is_separator_row(line: str) -> bool:
+    """A markdown table separator like `| --- | --- |` -- only |, -, :, spaces."""
+    stripped = line.strip().replace("|", "").replace("-", "").replace(" ", "").replace(":", "")
+    return len(stripped) == 0 and "|" in line and "-" in line
+
+
+def _has_separator(lines: list[str]) -> bool:
+    return any(_is_separator_row(line) for line in lines)
+
+
+def _split_into_segments(text: str) -> list[tuple[str, str]]:
+    """Split text into ("body" | "table", content) segments.
+
+    A markdown table is detected by consecutive lines starting with '|'
+    that contain a real separator row -- avoids false positives from a
+    line that happens to start with '|' but isn't part of a table.
+    """
+    segments: list[tuple[str, str]] = []
+    current_lines: list[str] = []
+    pipe_buffer: list[str] = []
+
+    def flush_pipe_buffer() -> None:
+        if not pipe_buffer:
+            return
+        if _has_separator(pipe_buffer):
+            if current_lines:
+                segments.append(("body", "\n".join(current_lines)))
+                current_lines.clear()
+            segments.append(("table", "\n".join(pipe_buffer)))
+        else:
+            current_lines.extend(pipe_buffer)
+        pipe_buffer.clear()
+
+    for line in text.split("\n"):
+        if line.strip().startswith("|"):
+            pipe_buffer.append(line)
+        else:
+            flush_pipe_buffer()
+            current_lines.append(line)
+    flush_pipe_buffer()
+    if current_lines:
+        segments.append(("body", "\n".join(current_lines)))
+    return segments
+
+
+def _chunk_table(table_text: str, target: int) -> list[str]:
+    """Split a markdown table by rows, repeating the header in each chunk."""
+    lines = [line for line in table_text.strip().split("\n") if line.strip()]
+    header_lines: list[str] = []
+    data_lines: list[str] = []
+    found_separator = False
+    for line in lines:
+        if not found_separator:
+            header_lines.append(line)
+            if _is_separator_row(line):
+                found_separator = True
+        else:
+            data_lines.append(line)
+    if not found_separator:
+        return [table_text.strip()]
+
+    header = "\n".join(header_lines)
+    chunks: list[str] = []
+    current_rows: list[str] = []
+    current_len = len(header)
+    for row in data_lines:
+        if current_rows and current_len + len(row) + 1 > target:
+            chunks.append(header + "\n" + "\n".join(current_rows))
+            current_rows = []
+            current_len = len(header)
+        current_rows.append(row)
+        current_len += len(row) + 1
+    if current_rows:
+        chunks.append(header + "\n" + "\n".join(current_rows))
     return chunks
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/documents/test_chunking.py -v`
-Expected: PASS (7 tests)
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/wnv_assistant/documents/chunking.py tests/documents/test_chunking.py
-git commit -m "Add page chunking with paragraph-aware split for oversized pages"
+git commit -m "Add recursive/structural chunking with table-aware row splitting"
 ```
 
 ---
@@ -837,13 +1048,34 @@ class EmbeddedChunk:
 
 
 def extract_document_chunks(document_name: str, pdf_bytes: bytes) -> list[DocumentChunk]:
-    """Extract, flag, and chunk every page of a PDF. No embedding call."""
-    chunks: list[DocumentChunk] = []
+    """Extract, flag, and chunk every page of a PDF. No embedding call.
+
+    Pages are extracted and flagged first, then chunked with access to
+    their neighbors' text -- chunk_page folds a small slice of the
+    adjacent page's text in as boundary context (see chunking.py's design
+    note on why). The template flag is still computed from each page's
+    own raw text, before any boundary context is folded in.
+    """
+    pages: list[tuple[int, str, bool]] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
             text = extract_page_text(page)
-            flagged = is_template_page(text)
-            chunks.extend(chunk_page(document_name, page_number, text, flagged))
+            pages.append((page_number, text, is_template_page(text)))
+
+    chunks: list[DocumentChunk] = []
+    for i, (page_number, text, flagged) in enumerate(pages):
+        prev_text = pages[i - 1][1] if i > 0 else ""
+        next_text = pages[i + 1][1] if i < len(pages) - 1 else ""
+        chunks.extend(
+            chunk_page(
+                document_name,
+                page_number,
+                text,
+                flagged,
+                prev_page_text=prev_text,
+                next_page_text=next_text,
+            )
+        )
     return chunks
 
 
@@ -1200,14 +1432,23 @@ git commit -m "Add Auto Loader document ingestion job (notebook + bundle resourc
 **Spec coverage** (against `docs/superpowers/specs/2026-07-31-rag-document-layer-design.md`):
 - §1 Ingestion pipeline: Auto Loader-triggered, paused-by-default Job — Task 7.
   `pdfplumber.extract_text()` + `extract_tables()` — Task 1. Template-flag
-  regex — Task 2. One chunk per page, paragraph-split above ~4,500 chars —
-  Task 3. Embedding call — Task 4/5. Store to `document_chunks` — Task 6.
-  Sparse/scanned pages not specially handled — no code branch exists for
-  this in `extract_document_chunks`, matching the spec's explicit decision
-  to accept the gap rather than detect it.
+  regex — Task 2. Embedding call — Task 4/5. Store to `document_chunks` —
+  Task 6. Sparse/scanned pages not specially handled — no code branch
+  exists for this in `extract_document_chunks`, matching the spec's
+  explicit decision to accept the gap rather than detect it.
+  **Superseded**: the spec's original "one chunk per page, paragraph-split
+  above ~4,500 chars" chunking approach was revised (2026-08-14, after
+  comparing prior projects and researching current RAG chunking practice)
+  to recursive character splitting (paragraph -> sentence -> character)
+  at a calibrated ~1,200-char target with overlap, plus table-aware
+  row-splitting and adjacent-page boundary context — see Task 3's design
+  note. The design doc itself needs a matching update to §1 before this
+  plan's chunking approach and the spec fully agree again.
 - §2 Storage: `document_chunks` schema — Task 6's DDL matches the spec's
-  table exactly (`chunk_type` kept as a column for future extensibility,
-  per the spec's note).
+  table exactly. `chunk_type` is now actively `"body"` or `"table"`
+  (previously always `"body"`, with `chunk_type` kept only for "future
+  extensibility" per the spec's original note) — a real behavior change
+  from the spec as originally written, not just an implementation detail.
 - §3 Retrieval, §4 Integration, §5 Testing (eval suite): out of scope for
   this plan — covered by the follow-up "Plan B" (retriever, `DocumentTool`,
   orchestrator wiring), which depends on this plan's `document_chunks`
@@ -1218,4 +1459,11 @@ git commit -m "Add Auto Loader document ingestion job (notebook + bundle resourc
 **Type consistency:** `DocumentChunk` (Task 3) is used identically in
 Tasks 5, 6; `EmbeddedChunk` (Task 5) is used identically in Task 6 and the
 job notebook (Task 7); `EmbeddingClient.embed` signature (Task 4) matches
-its call site in `ingest.py` (Task 5).
+its call site in `ingest.py` (Task 5); `chunk_page`'s new
+`prev_page_text`/`next_page_text` keyword arguments (Task 3) match how
+`ingest.py`'s `extract_document_chunks` (Task 5) calls it.
+
+**Follow-up required:** the design doc
+(`docs/superpowers/specs/2026-07-31-rag-document-layer-design.md`) §1
+still describes the old one-chunk-per-page approach and needs updating to
+match this plan before both documents agree.
