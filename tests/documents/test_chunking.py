@@ -105,3 +105,12 @@ class TestChunkPage:
         chunks = chunk_page("mixed.pdf", 9, text, is_template=False)
         types = {c.chunk_type for c in chunks}
         assert types == {"body", "table"}
+
+    def test_header_only_table_produces_one_chunk(self) -> None:
+        """A table with only header and separator (no data rows) should emit the header as one chunk."""
+        table_text = "| County | Cases |\n| --- | --- |"
+        chunks = chunk_page("t.pdf", 1, table_text, is_template=False)
+        assert len(chunks) == 1
+        assert chunks[0].chunk_type == "table"
+        assert "County" in chunks[0].text
+        assert "Cases" in chunks[0].text

@@ -208,4 +208,7 @@ def _chunk_table(table_text: str, target: int) -> list[str]:
         current_len += len(row) + 1
     if current_rows:
         chunks.append(header + "\n" + "\n".join(current_rows))
+    elif not chunks:
+        # No data rows at all -- emit header alone rather than losing it
+        chunks.append(header)
     return chunks
