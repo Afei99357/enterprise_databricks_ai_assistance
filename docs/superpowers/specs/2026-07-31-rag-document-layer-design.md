@@ -1,6 +1,6 @@
 # RAG Document Layer — Design
 
-Date: 2026-07-31
+Date: 2026-07-31 (revised 2026-08-14)
 Branch under discussion: `milestone/m6-agent-architecture`
 
 ## Context
@@ -13,58 +13,47 @@ project's stated purpose is demonstrating a pattern for combining structured
 surveillance data with unstructured source documents (CDC toolkits, research
 papers, internal reports) — this design wires up the missing half.
 
+**Revision note (2026-08-14).** The original version of this design used
+vision-model OCR (Qwen3-VL) for every page, based on a spike test showing it
+matched source documents essentially exactly. Actually standing up a custom
+GPU-backed Model Serving endpoint for it proved far more costly than
+expected (a long real debugging process — MLflow schema/signature quirks,
+request-shape surprises specific to Databricks' serving layer, GPU memory
+sizing), and the *deployed*, resource-constrained endpoint turned out to be
+measurably less accurate than free plain-text extraction: a real
+side-by-side check against `pdfplumber.extract_text()` ground truth found
+`pdfplumber` 100% correct on a test page where the OCR endpoint had a real
+(if subtle) transcription error. Given most real documents have genuine
+embedded text layers, this design now uses `pdfplumber` for every page and
+drops vision-OCR from this project's scope entirely. The OCR work (a
+working, fully-debugged Qwen3-VL serving endpoint; the spike-test harness
+and findings; three real test documents) was moved to a separate project,
+`/home/eric/Projects/ocr-document-extraction`, to revisit later if a real
+need for it shows up (scanned pages, diagram-heavy pages — see Open
+Questions).
+
 **Validation before design.** Before committing to an extraction approach, a
 spike test compared vision-model OCR quality across five configurations
 (Gemma 3 12B, Llama 4 Maverick, Claude Sonnet 4.5 at 150 and 300 DPI, and a
 locally-run open-weight model, Qwen3-VL 4B) against the actual text of two
-real source documents, diffed line-by-line against ground truth. Findings
-that shaped this design:
+real source documents, diffed line-by-line against ground truth. This
+informed the OCR investigation (now spun out — see above) but the concrete
+findings are still relevant context:
 
 - Every Databricks-hosted model tested (Gemma, Maverick, Claude) made real
   content errors on a dense table page — dropped rows, cross-row content
   bleeding, garbled sentences — even at 300 DPI.
-- Qwen3-VL 4B, run locally, matched source documents essentially exactly
-  across all test pages, including correctly distinguishing genuine
-  fill-in-the-blank template pages from normal narrative pages (every
-  hosted model false-flagged a normal page as a template).
-- A GPU is sufficient to serve a 4B vision model, and since ingestion only
-  needs to run on a schedule or manual trigger (not as an always-on
-  endpoint), GPU cost is not a real constraint at this scale. (Initially
-  assumed T4/`GPU_SMALL` would be enough — corrected during implementation
-  to A10/`GPU_MEDIUM`, since Databricks documents that as the default tier
-  for general inference and uses A10 in their own worked example for a
-  *smaller* vision-language model; vision models need more headroom than a
-  same-size text model because page-image inputs decode into a lot of
-  vision tokens, consuming KV-cache memory beyond just the model weights.)
-- Given Qwen3-VL's validated accuracy and the low GPU cost, the design uses
-  vision-OCR for every page rather than a text-layer-extraction-first
-  approach — simpler, and the earlier concern (vision-OCR is less reliable
-  than text extraction) does not hold for this specific model.
+- Qwen3-VL 4B, run locally at full resolution, matched source documents
+  essentially exactly across all test pages.
 - Testing against a second and third real document (an academic paper, a
-  slide deck) surfaced two further risks that shaped chunking: tables can
-  span more than one page, and some pages carry their real content in
-  vector-drawn diagrams (flowcharts, cladograms) that have no meaningful
-  text-extraction equivalent — a bag of disconnected labels — even though
-  the model can see and describe the diagram directly from the page image.
+  slide deck) surfaced two further risks that still shape this design: some
+  tables can span more than one page, and some pages carry their real
+  content in vector-drawn diagrams (flowcharts, cladograms) that
+  `pdfplumber` extracts only as a bag of disconnected labels, not the
+  diagram's actual structure/relationships — a real, accepted gap (see Open
+  Questions).
 
-## 1. Model serving
-
-**Decision.** Deploy Qwen3-VL 4B as a custom, GPU-backed (A10, `GPU_MEDIUM`) Databricks
-Model Serving endpoint. The ingestion pipeline calls it by a configurable
-endpoint name (`WNV_VISION_ENDPOINT`), the same pattern already used for
-`WNV_LLM_ENDPOINT` — swapping models later is a config change, not a code
-change.
-
-Standing up this endpoint (packaging the model for Databricks Custom Model
-Serving, GPU compute config) is a deployment prerequisite for this pipeline
-but is infrastructure work, not pipeline logic — out of scope for the
-implementation plan that follows this design. The pipeline is written
-against the endpoint's contract (an OpenAI-style chat completions API
-accepting image input, as validated in the spike test), not against Qwen3-VL
-specifically, so it is not blocked on that deployment being finished first;
-it can be developed and unit-tested against a fake/mocked endpoint.
-
-## 2. Ingestion pipeline
+## 1. Ingestion pipeline
 
 **Decision.** A Databricks Job, defined with `schedule.pause_status: PAUSED`
 by default so deploying the bundle never causes it to start running on its
@@ -77,52 +66,31 @@ many documents eventually land in the Volume.
 
 Per new document, per page:
 
-1. **Render** the page to a 300 DPI PNG. (300 DPI is the validated floor —
-   150 DPI measurably lost content in the spike test that 300 DPI recovered.)
-2. **Extract** — send the image to the Qwen3-VL endpoint with the validated
-   extraction prompt, which instructs the model to:
-   - transcribe all text as clean markdown, tables as markdown tables,
-   - keep a colored callout/sidebar box as a distinct block, not interleaved
-     into adjacent body text,
-   - flag a genuine fill-in-the-blank template page,
-   - flag when a table continues from the previous page or onto the next
-     page (`TABLE_CONTINUES_FROM_PREV` / `TABLE_CONTINUES_TO_NEXT`) — this
-     signal is consumed later by the retrieval loop (§4), not by ingestion;
-     multi-page tables are **not** stitched into a single chunk at ingestion
-     time (explicitly deferred — see Open Questions),
-   - if the page contains a diagram (flowchart, tree, pathway diagram),
-     describe its content and relationships under a distinct `Figure:`
-     label, separate from body text — the same structural pattern already
-     validated for callout boxes (kept as a distinct block, not interleaved
-     into body paragraphs), extended to cover diagrams. This specific
-     labeling instruction was not itself part of the spike test (the spike
-     confirmed the model *can* accurately describe a diagram when asked
-     directly, not that it reliably applies a distinct label unprompted for
-     every diagram-bearing page) — it's a low-risk extension of a validated
-     pattern, not independently validated. If diagram descriptions bleed
-     into body text instead of staying under the `Figure:` label during
-     implementation, the chunker falls back to treating the whole page as
-     one `body` chunk (no `figure_caption` chunk created) rather than
-     guessing at a split.
-3. **Template-flag deterministically** — regex the extracted markdown for
-   `[INSERT`-style bracket patterns rather than trusting the model's
-   self-reported flag. This is cheap and decouples correctness from which
-   model happens to be behind the endpoint in the future; Qwen3-VL got this
-   right unassisted in testing, but a future model swap should not be able
-   to silently regress it.
-4. **Chunk** — one chunk per page by default (`chunk_type = body`). If the
-   extracted markdown contains a `Figure:`-labeled block (per step 2), that
-   block becomes an additional `chunk_type = figure_caption` chunk,
-   alongside (not instead of) the page's body-text chunk.
-   Paragraph-aware splitting only applies if a page's extracted text
-   exceeds a length threshold well beyond what real documents tested so far
-   have produced (~4,500 characters was the longest page seen).
-5. **Embed** — call a text-embedding endpoint (Databricks Foundation Model
+1. **Extract** — `pdfplumber.extract_text()` for the page's text, and
+   `page.extract_tables()` for any detected tables, rendered as markdown
+   tables and appended to the page's text rather than left as separate
+   structured data — keeps the chunk shape uniform (plain markdown per
+   chunk) and avoids a second chunk type for what's still fundamentally the
+   same page of content.
+2. **Template-flag deterministically** — regex the extracted text for
+   `[INSERT`-style bracket patterns to flag genuine fill-in-the-blank
+   template pages. Same check as before, now against `pdfplumber` output
+   instead of OCR output — the regex itself doesn't change.
+3. **Chunk** — one chunk per page (`chunk_type = body`). Paragraph-aware
+   splitting only applies if a page's extracted text exceeds a length
+   threshold well beyond what real documents tested so far have produced
+   (~4,500 characters was the longest page seen in earlier testing).
+4. **Embed** — call a text-embedding endpoint (Databricks Foundation Model
    API, `databricks-gte-large-en`) per chunk.
-6. **Store** — write chunks + embeddings + metadata to `document_chunks`
-   (§3).
+5. **Store** — write chunks + embeddings + metadata to `document_chunks`
+   (§2).
 
-## 3. Storage
+A page with little or no extractable text (a scanned image, a diagram-only
+page) is not specially detected or handled — whatever `pdfplumber` returns,
+even if sparse or empty, is what gets ingested. This is an accepted gap, not
+an oversight — see Open Questions.
+
+## 2. Storage
 
 **Decision.** One new Delta table, `document_chunks`, alongside the existing
 structured Gold table:
@@ -132,15 +100,17 @@ structured Gold table:
 | `chunk_id` | STRING (PK) | hash of document name + page + chunk type |
 | `document_name` | STRING | source filename |
 | `page_number` | INT | 1-indexed |
-| `chunk_type` | STRING | `body` \| `figure_caption` |
+| `chunk_type` | STRING | `body` (only type for now — see Open Questions) |
 | `text` | STRING | extracted markdown for this chunk |
 | `embedding` | ARRAY&lt;FLOAT&gt; | text-embedding vector |
 | `is_template_page` | BOOLEAN | from the deterministic regex check |
-| `table_continues_to_next` | BOOLEAN | from the model's continuation flag |
-| `table_continues_from_prev` | BOOLEAN | from the model's continuation flag |
 | `ingested_at` | TIMESTAMP | |
 
-## 4. Retrieval
+`chunk_type` keeps room for a future `figure_caption` (or similar) type if
+diagram handling is ever added back — dropped from active use for now, not
+removed from the schema shape.
+
+## 3. Retrieval
 
 **Decision.** In-process brute-force cosine similarity over `document_chunks`
 to start, implemented behind a small `Retriever` interface so it can be
@@ -153,21 +123,19 @@ Query flow:
 
 1. **Search** — embed the question, rank all chunks by cosine similarity,
    take the top-k.
-2. **Expand** — for each matched chunk, also pull in its same-page sibling
-   chunks (e.g. a page's `figure_caption` chunk rides along with its `body`
-   chunk, and vice versa) and its immediately adjacent page's chunk(s). This
-   is the default fix for content that's split across a page boundary (a
-   table's title on page N, its rows on page N+1) — it's automatic and
-   doesn't depend on the adjacent chunk having scored well on its own.
+2. **Expand** — for each matched chunk, also pull in its immediately
+   adjacent page's chunk(s). This is the default fix for content that's
+   split across a page boundary (a table's title on page N, its rows on
+   page N+1) — it's automatic and doesn't depend on the adjacent chunk
+   having scored well on its own.
 3. **Agentic follow-up loop** — capped at 3 iterations. After the initial
    search + expand, the loop can take one of:
    - `lookup_page(n)` — fetch a specific page's chunk(s) directly. Triggered
-     when the assembled context contains a `table_continues_to_next` /
-     `table_continues_from_prev` flag pointing beyond the already-expanded
-     adjacent page (the case from §2 that ingestion deliberately doesn't
-     solve — a table spanning more than 2 pages), or when the model
-     recognizes an internal cross-reference ("see page 12") that isn't
-     physically adjacent to what was already retrieved.
+     when the model recognizes an internal cross-reference ("see page 12")
+     that isn't physically adjacent to what was already retrieved, or when
+     a table visibly looks cut off at a page boundary in the assembled
+     context (no deterministic signal for this without OCR — relies on the
+     model noticing, same as any other follow-up trigger).
    - `search(refined_query)` — re-run search with a refined query when the
      initial results look insufficient.
    - `answer` — synthesize the final answer from everything gathered so far.
@@ -179,7 +147,7 @@ query rewriting were considered and explicitly deferred — not needed at
 current document count, and can be added inside the `Retriever` interface
 later without changing its callers.
 
-## 5. Integration
+## 4. Integration
 
 **Decision.** A `DocumentTool`, mirroring the existing `TextToSQLTool`
 pattern (`analytics/text_to_sql.py`) rather than inventing a new shape:
@@ -204,18 +172,17 @@ same shape as the existing `ANALYTICS` branch: call the tool, build a
 by this work), synthesize the answer, attach warnings only for genuine
 failure cases (not "not implemented" placeholders).
 
-## 6. Testing
+## 5. Testing
 
 **Decision, following the project's existing pytest marker conventions**
 (`real_data`, `integration`, `eval`):
 
-- Unit tests, no external dependencies: chunking logic, the deterministic
-  template-flag regex, parsing a `Figure:`-labeled block out of extracted
-  markdown into its own chunk, retrieval's same-page/adjacent-page
-  expansion, cosine-similarity ranking.
-- `integration`-marked tests: real calls to the Qwen3-VL endpoint and the
-  embedding endpoint, gated on `WNV_DATABRICKS_HOST`/`WNV_DATABRICKS_TOKEN`
-  being set, matching the existing convention.
+- Unit tests, no external dependencies: `pdfplumber` extraction against
+  real fixture PDFs, the deterministic template-flag regex, retrieval's
+  adjacent-page expansion, cosine-similarity ranking.
+- `integration`-marked tests: real calls to the embedding endpoint, gated on
+  `WNV_DATABRICKS_HOST`/`WNV_DATABRICKS_TOKEN` being set, matching the
+  existing convention.
 - `eval`-marked tests: extend `tests/evals/questions.yml` with `DOCUMENT` and
   `MIXED` questions against the real ingested documents, following the
   existing eval harness (routing accuracy + answer-shape checks, not
@@ -224,9 +191,19 @@ failure cases (not "not implemented" placeholders).
 
 ## Open questions / explicitly deferred
 
+- **No vision-OCR in this project.** Pages with no extractable text layer
+  (scanned images) or whose real content is a diagram are not specially
+  handled — `pdfplumber` returns whatever sparse/empty text it can, and
+  that's what gets ingested. A working, debugged vision-OCR endpoint and
+  the reasoning for when it would actually be worth using (no text layer at
+  all, or a real diagram) live in `/home/eric/Projects/ocr-document-extraction`,
+  for a future project if this gap proves to matter in practice.
 - **Multi-page table stitching at ingestion time** — a table spanning more
-  than 2 pages is not merged into a single chunk. The agentic retrieval
-  loop's `lookup_page` action is relied on instead. Revisit if this proves
+  than 2 pages is not merged into a single chunk, and unlike the earlier
+  OCR-based version of this design, there's no deterministic
+  continuation-flag signal at all (that came from the model, not from
+  `pdfplumber`). The agentic retrieval loop's `lookup_page` action is
+  relied on instead, on a best-effort basis. Revisit if this proves
   insufficient in practice.
 - **Vector Search migration** — the `Retriever` interface exists specifically
   so this is a swap, not a rewrite, when/if the corpus grows enough to need
