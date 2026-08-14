@@ -14,7 +14,6 @@ import pdfplumber
 from .chunking import DocumentChunk, chunk_page
 from .embedding import EmbeddingClient
 from .extraction import extract_page_text
-from .template_flag import is_template_page
 
 
 @dataclass(frozen=True)
@@ -26,22 +25,20 @@ class EmbeddedChunk:
 
 
 def extract_document_chunks(document_name: str, pdf_bytes: bytes) -> list[DocumentChunk]:
-    """Extract, flag, and chunk every page of a PDF. No embedding call.
+    """Extract and chunk every page of a PDF. No embedding call.
 
-    Pages are extracted and flagged first, then chunked with access to
-    their neighbors' text -- chunk_page folds a small slice of the
-    adjacent page's text in as boundary context (see chunking.py's design
-    note on why). The template flag is still computed from each page's
-    own raw text, before any boundary context is folded in.
+    Pages are extracted first, then chunked with access to their
+    neighbors' text -- chunk_page folds a small slice of the adjacent
+    page's text in as boundary context and computes the template flag
+    per resulting chunk (see chunking.py's module docstring for why).
     """
-    pages: list[tuple[int, str, bool]] = []
+    pages: list[tuple[int, str]] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
-            text = extract_page_text(page)
-            pages.append((page_number, text, is_template_page(text)))
+            pages.append((page_number, extract_page_text(page)))
 
     chunks: list[DocumentChunk] = []
-    for i, (page_number, text, flagged) in enumerate(pages):
+    for i, (page_number, text) in enumerate(pages):
         prev_text = pages[i - 1][1] if i > 0 else ""
         next_text = pages[i + 1][1] if i < len(pages) - 1 else ""
         chunks.extend(
@@ -49,7 +46,6 @@ def extract_document_chunks(document_name: str, pdf_bytes: bytes) -> list[Docume
                 document_name,
                 page_number,
                 text,
-                flagged,
                 prev_page_text=prev_text,
                 next_page_text=next_text,
             )

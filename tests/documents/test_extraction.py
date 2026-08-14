@@ -21,10 +21,8 @@ def _make_pdf_bytes(text: str) -> bytes:
     return buf.getvalue()
 
 
-def _make_pdf_with_table(
-    table_data: list[list[str]], text: str | None = None
-) -> bytes:
-    """Build a PDF with a table (and optional text) using reportlab.platypus.
+def _make_pdf_with_table(table_data: list[list[str]], text: str | None = None) -> bytes:
+    """Build a PDF with a real drawn table (and optional text) via platypus.
 
     Args:
         table_data: List of rows, each row is a list of strings (cells).
@@ -33,10 +31,10 @@ def _make_pdf_with_table(
     Returns:
         PDF bytes.
     """
-    from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+    from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, topMargin=36, bottomMargin=36)
@@ -44,12 +42,16 @@ def _make_pdf_with_table(
 
     if text:
         styles = getSampleStyleSheet()
-        story.append(Paragraph(text, styles['Normal']))
+        story.append(Paragraph(text, styles["Normal"]))
 
     table = Table(table_data)
-    table.setStyle(TableStyle([
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-    ]))
+    table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ]
+        )
+    )
     story.append(table)
     doc.build(story)
     return buf.getvalue()
@@ -65,28 +67,12 @@ def simple_page():
 
 @pytest.fixture
 def table_page():
-    """A one-page PDF with a simple 2x2 table."""
+    """A one-page PDF with a real drawn 2x2 table."""
     table_data = [
-        ['Name', 'Value'],
-        ['Test', '123'],
+        ["Species", "Count"],
+        ["WNV", "42"],
     ]
     pdf_bytes = _make_pdf_with_table(table_data)
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        yield pdf.pages[0]
-
-
-@pytest.fixture
-def text_and_table_page():
-    """A one-page PDF with text followed by a table."""
-    table_data = [
-        ['Species', 'Count'],
-        ['WNV', '42'],
-        ['Other', '8'],
-    ]
-    pdf_bytes = _make_pdf_with_table(
-        table_data,
-        text="Surveillance data for Q4:"
-    )
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         yield pdf.pages[0]
 
@@ -102,46 +88,16 @@ class TestExtractPageText:
             result = extract_page_text(pdf.pages[0])
         assert result == ""
 
-    def test_extracts_table_as_markdown(self, table_page) -> None:
-        """Test that tables are extracted and rendered as markdown."""
+    def test_table_cell_content_appears_in_plain_text(self, table_page) -> None:
+        """A table's cells are ordinary visible text to extract_text().
+
+        Tables get no special treatment here (no markdown rendering) --
+        this asserts only that their content isn't *lost*, which is the
+        whole reason the markdown-rendering step was safe to drop.
+        """
         result = extract_page_text(table_page)
 
-        # Verify markdown table structure
-        assert "| Name | Value |" in result
-        assert "| --- | --- |" in result
-        assert "| Test | 123 |" in result
-
-    def test_extracts_table_with_multiple_rows(self, text_and_table_page) -> None:
-        """Test table extraction with multiple data rows."""
-        result = extract_page_text(text_and_table_page)
-
-        # Verify text is present
-        assert "Surveillance data for Q4" in result
-
-        # Verify table structure
-        assert "| Species | Count |" in result
-        assert "| --- | --- |" in result
-        assert "| WNV | 42 |" in result
-        assert "| Other | 8 |" in result
-
-    def test_text_and_table_are_separated(self, text_and_table_page) -> None:
-        """Test that text and table output are separated by double newline."""
-        result = extract_page_text(text_and_table_page)
-
-        # The result should have both text and markdown table
-        assert "Surveillance data for Q4" in result
-        assert "| Species | Count |" in result
-
-        # Text and markdown table should be separated by double newline
-        assert "\n\n" in result
-
-        # Extract parts by splitting on double newline
-        parts = result.split("\n\n")
-        assert len(parts) >= 2
-
-        # One part contains the intro text, another contains the markdown table
-        has_intro_text = any("Surveillance data for Q4" in part for part in parts)
-        has_markdown_table = any("| Species | Count |" in part for part in parts)
-
-        assert has_intro_text, "Result should contain the intro text"
-        assert has_markdown_table, "Result should contain the markdown table"
+        assert "Species" in result
+        assert "Count" in result
+        assert "WNV" in result
+        assert "42" in result

@@ -1,10 +1,10 @@
 """Chunks extracted page text into DocumentChunk records.
 
 Recursive character splitting (paragraph -> sentence -> raw character)
-with a calibrated target size and overlap, plus a table-aware row-based
-strategy for markdown tables. See Task 3's design note in the
-implementation plan for why this replaced an earlier
-whole-page-as-one-chunk design.
+with a calibrated target size and overlap. See the design doc's §1 step 3
+for the full reasoning, including why tables aren't given dedicated
+chunking treatment and why the template flag is computed per resulting
+chunk rather than passed in from the caller.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+
+from .template_flag import is_template_page
 
 _TARGET_CHUNK_CHARS = 1200  # ~300 tokens
 _CHUNK_OVERLAP_CHARS = 150  # ~12.5%
@@ -27,7 +29,7 @@ class DocumentChunk:
     chunk_id: str
     document_name: str
     page_number: int
-    chunk_type: str  # "body" | "table"
+    chunk_type: str  # always "body" for now -- see design doc §2
     text: str
     is_template_page: bool
 
@@ -44,7 +46,6 @@ def chunk_page(
     document_name: str,
     page_number: int,
     text: str,
-    is_template: bool,
     *,
     prev_page_text: str = "",
     next_page_text: str = "",
@@ -55,34 +56,30 @@ def chunk_page(
     next page are folded onto this page's text before chunking -- not
     stored as separate chunks, just context that keeps a chunk near a
     page boundary from being embedded as an isolated, possibly
-    mid-sentence fragment.
+    mid-sentence fragment. The template flag is computed against each
+    resulting chunk's own actual text (which can include folded-in
+    neighbor-page context), not the originating page's raw text alone --
+    see the module docstring for why.
     """
     prefix = prev_page_text[-_BOUNDARY_CONTEXT_CHARS:] if prev_page_text else ""
     suffix = next_page_text[:_BOUNDARY_CONTEXT_CHARS] if next_page_text else ""
     context_text = "\n\n".join(p for p in [prefix, text, suffix] if p)
 
+    pieces = _split_text_recursive(
+        context_text, _TARGET_CHUNK_CHARS, _CHUNK_OVERLAP_CHARS
+    )
     chunks: list[DocumentChunk] = []
-    part = 0
-    for chunk_type, content in _split_into_segments(context_text):
-        if not content.strip():
-            continue
-        pieces = (
-            _chunk_table(content, _TARGET_CHUNK_CHARS)
-            if chunk_type == "table"
-            else _split_text_recursive(content, _TARGET_CHUNK_CHARS, _CHUNK_OVERLAP_CHARS)
-        )
-        for piece in pieces:
-            chunks.append(
-                DocumentChunk(
-                    chunk_id=make_chunk_id(document_name, page_number, chunk_type, part),
-                    document_name=document_name,
-                    page_number=page_number,
-                    chunk_type=chunk_type,
-                    text=piece,
-                    is_template_page=is_template,
-                )
+    for part, piece in enumerate(pieces):
+        chunks.append(
+            DocumentChunk(
+                chunk_id=make_chunk_id(document_name, page_number, "body", part),
+                document_name=document_name,
+                page_number=page_number,
+                chunk_type="body",
+                text=piece,
+                is_template_page=is_template_page(piece),
             )
-            part += 1
+        )
     return chunks
 
 
@@ -132,83 +129,3 @@ def _split_oversized_paragraph(paragraph: str, target: int) -> list[str]:
         return pieces
     # A single sentence still too big -- fall back to raw character slices.
     return [paragraph[i : i + target] for i in range(0, len(paragraph), target)]
-
-
-def _is_separator_row(line: str) -> bool:
-    """A markdown table separator like `| --- | --- |` -- only |, -, :, spaces."""
-    stripped = line.strip().replace("|", "").replace("-", "").replace(" ", "").replace(":", "")
-    return len(stripped) == 0 and "|" in line and "-" in line
-
-
-def _has_separator(lines: list[str]) -> bool:
-    return any(_is_separator_row(line) for line in lines)
-
-
-def _split_into_segments(text: str) -> list[tuple[str, str]]:
-    """Split text into ("body" | "table", content) segments.
-
-    A markdown table is detected by consecutive lines starting with '|'
-    that contain a real separator row -- avoids false positives from a
-    line that happens to start with '|' but isn't part of a table.
-    """
-    segments: list[tuple[str, str]] = []
-    current_lines: list[str] = []
-    pipe_buffer: list[str] = []
-
-    def flush_pipe_buffer() -> None:
-        if not pipe_buffer:
-            return
-        if _has_separator(pipe_buffer):
-            if current_lines:
-                segments.append(("body", "\n".join(current_lines)))
-                current_lines.clear()
-            segments.append(("table", "\n".join(pipe_buffer)))
-        else:
-            current_lines.extend(pipe_buffer)
-        pipe_buffer.clear()
-
-    for line in text.split("\n"):
-        if line.strip().startswith("|"):
-            pipe_buffer.append(line)
-        else:
-            flush_pipe_buffer()
-            current_lines.append(line)
-    flush_pipe_buffer()
-    if current_lines:
-        segments.append(("body", "\n".join(current_lines)))
-    return segments
-
-
-def _chunk_table(table_text: str, target: int) -> list[str]:
-    """Split a markdown table by rows, repeating the header in each chunk."""
-    lines = [line for line in table_text.strip().split("\n") if line.strip()]
-    header_lines: list[str] = []
-    data_lines: list[str] = []
-    found_separator = False
-    for line in lines:
-        if not found_separator:
-            header_lines.append(line)
-            if _is_separator_row(line):
-                found_separator = True
-        else:
-            data_lines.append(line)
-    if not found_separator:
-        return [table_text.strip()]
-
-    header = "\n".join(header_lines)
-    chunks: list[str] = []
-    current_rows: list[str] = []
-    current_len = len(header)
-    for row in data_lines:
-        if current_rows and current_len + len(row) + 1 > target:
-            chunks.append(header + "\n" + "\n".join(current_rows))
-            current_rows = []
-            current_len = len(header)
-        current_rows.append(row)
-        current_len += len(row) + 1
-    if current_rows:
-        chunks.append(header + "\n" + "\n".join(current_rows))
-    elif not chunks:
-        # No data rows at all -- emit header alone rather than losing it
-        chunks.append(header)
-    return chunks

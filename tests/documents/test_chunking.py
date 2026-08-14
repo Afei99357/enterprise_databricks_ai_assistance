@@ -8,6 +8,10 @@ from wnv_assistant.documents.chunking import (
     make_chunk_id,
 )
 
+# target (1200) + overlap (150) + 2 for the "\n\n" that joins the carried-over
+# overlap tail to the next piece -- see _split_text_recursive.
+_MAX_CHUNK_CHARS = 1200 + 150 + 2
+
 
 class TestMakeChunkId:
     def test_same_inputs_produce_same_id(self) -> None:
@@ -28,7 +32,7 @@ class TestMakeChunkId:
 
 class TestChunkPage:
     def test_short_page_produces_one_chunk(self) -> None:
-        chunks = chunk_page("toolkit.pdf", 5, "Some page text.", is_template=False)
+        chunks = chunk_page("toolkit.pdf", 5, "Some page text.")
         assert len(chunks) == 1
         chunk = chunks[0]
         assert isinstance(chunk, DocumentChunk)
@@ -38,22 +42,29 @@ class TestChunkPage:
         assert chunk.text == "Some page text."
         assert chunk.is_template_page is False
 
-    def test_template_flag_is_carried_through(self) -> None:
-        chunks = chunk_page("toolkit.pdf", 1, "[INSERT NAME]", is_template=True)
-        assert chunks[0].is_template_page is True
-
     def test_oversized_page_splits_into_multiple_chunks(self) -> None:
         paragraph = "A" * 800
         text = "\n\n".join([paragraph] * 5)  # 4000+ chars, well over target
-        chunks = chunk_page("report.pdf", 2, text, is_template=False)
+        chunks = chunk_page("report.pdf", 2, text)
         assert len(chunks) > 1
         assert all(c.chunk_type == "body" for c in chunks)
-        assert all(len(c.text) <= 1200 + 150 for c in chunks)  # target + overlap slack
+        assert all(len(c.text) <= _MAX_CHUNK_CHARS for c in chunks)
         assert len({c.chunk_id for c in chunks}) == len(chunks)
+
+    def test_unbroken_run_respects_the_size_ceiling(self) -> None:
+        """One giant unsplittable "sentence" exercises the widest chunk case.
+
+        Character-slicing yields target-sized pieces, and each packed
+        chunk after the first is `overlap` tail + "\\n\\n" + a full
+        target-sized piece -- so target + overlap + 2 is the true ceiling.
+        """
+        chunks = chunk_page("d.pdf", 1, "A" * 3000)
+        assert len(chunks) > 1
+        assert max(len(c.text) for c in chunks) <= _MAX_CHUNK_CHARS
 
     def test_short_page_stays_one_chunk(self) -> None:
         text = "A" * 1000  # under _TARGET_CHUNK_CHARS
-        chunks = chunk_page("report.pdf", 3, text, is_template=False)
+        chunks = chunk_page("report.pdf", 3, text)
         assert len(chunks) == 1
 
     def test_boundary_context_is_folded_into_first_chunk(self) -> None:
@@ -61,7 +72,6 @@ class TestChunkPage:
             "report.pdf",
             4,
             "This page's own text.",
-            is_template=False,
             prev_page_text="Trailing context from the previous page.",
         )
         assert "Trailing context from the previous page." in chunks[0].text
@@ -72,45 +82,59 @@ class TestChunkPage:
             "report.pdf",
             4,
             "This page's own text.",
-            is_template=False,
             next_page_text="Leading context from the next page.",
         )
         assert "Leading context from the next page." in chunks[-1].text
 
-    def test_markdown_table_splits_by_row_with_repeated_header(self) -> None:
-        header = "| County | Cases |\n| --- | --- |"
-        # 150 rows -> ~2,800 chars total, safely over the 1,200-char
-        # target (60 rows was tried and measured at only ~1,090 chars --
-        # not enough margin to actually force a split).
-        rows = [f"| County{i} | {i} |" for i in range(150)]
-        table_text = header + "\n" + "\n".join(rows)
-        chunks = chunk_page("surveillance.pdf", 7, table_text, is_template=False)
-        assert len(chunks) > 1
-        assert all(c.chunk_type == "table" for c in chunks)
-        # Every chunk repeats the header -- self-contained on its own.
-        assert all("| County | Cases |" in c.text for c in chunks)
 
-    def test_small_table_stays_one_chunk(self) -> None:
-        table_text = "| County | Cases |\n| --- | --- |\n| Cook | 12 |"
-        chunks = chunk_page("surveillance.pdf", 8, table_text, is_template=False)
-        assert len(chunks) == 1
-        assert chunks[0].chunk_type == "table"
+class TestTemplateFlag:
+    """The flag is computed per resulting chunk, not passed in by the caller."""
 
-    def test_mixed_text_and_table_produces_both_chunk_types(self) -> None:
-        text = (
-            "Some narrative text before the table.\n\n"
-            "| County | Cases |\n| --- | --- |\n| Cook | 12 |\n\n"
-            "Some narrative text after the table."
+    def test_marker_in_the_page_text_flags_the_chunk(self) -> None:
+        chunks = chunk_page("toolkit.pdf", 1, "[INSERT NAME]")
+        assert chunks[0].is_template_page is True
+
+    def test_plain_text_is_not_flagged(self) -> None:
+        chunks = chunk_page("toolkit.pdf", 1, "Ordinary narrative text.")
+        assert chunks[0].is_template_page is False
+
+    def test_marker_folded_in_from_the_next_page_flags_the_chunk(self) -> None:
+        """The chunk's own text contains the marker, so it must be flagged.
+
+        This page's raw text has no marker -- the old page-level flag
+        computed by the caller would have said False, a false negative.
+        """
+        chunks = chunk_page(
+            "toolkit.pdf",
+            1,
+            "Ordinary narrative text on this page.",
+            next_page_text="Call [INSERT PHONE] for help.",
         )
-        chunks = chunk_page("mixed.pdf", 9, text, is_template=False)
-        types = {c.chunk_type for c in chunks}
-        assert types == {"body", "table"}
-
-    def test_header_only_table_produces_one_chunk(self) -> None:
-        """A table with only header and separator (no data rows) should emit the header as one chunk."""
-        table_text = "| County | Cases |\n| --- | --- |"
-        chunks = chunk_page("t.pdf", 1, table_text, is_template=False)
         assert len(chunks) == 1
-        assert chunks[0].chunk_type == "table"
-        assert "County" in chunks[0].text
-        assert "Cases" in chunks[0].text
+        assert "[INSERT PHONE]" in chunks[0].text
+        assert chunks[0].is_template_page is True
+
+    def test_marker_beyond_the_boundary_window_does_not_flag_the_chunk(self) -> None:
+        """A marker past the 300-char fold-in window never reaches the chunk."""
+        next_page_text = ("B" * 400) + " Call [INSERT PHONE] for help."
+        chunks = chunk_page(
+            "toolkit.pdf",
+            1,
+            "Ordinary narrative text on this page.",
+            next_page_text=next_page_text,
+        )
+        assert all("[INSERT PHONE]" not in c.text for c in chunks)
+        assert all(c.is_template_page is False for c in chunks)
+
+    def test_flag_is_computed_per_chunk_not_per_page(self) -> None:
+        """An oversized page gets an accurate flag on each of its chunks."""
+        plain = "A" * 1100
+        marked = "Please call [INSERT PHONE]. " + ("B" * 1100)
+        chunks = chunk_page("toolkit.pdf", 1, f"{plain}\n\n{marked}")
+
+        assert len(chunks) > 1
+        flags = [c.is_template_page for c in chunks]
+        assert any(flags), "the chunk carrying the marker must be flagged"
+        assert not all(flags), "chunks without the marker must not be flagged"
+        for chunk in chunks:
+            assert chunk.is_template_page is ("[INSERT PHONE]" in chunk.text)

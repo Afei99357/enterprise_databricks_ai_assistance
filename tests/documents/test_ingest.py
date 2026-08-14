@@ -15,11 +15,14 @@ from wnv_assistant.documents.ingest import (
 
 
 def _make_two_page_pdf(page1_text: str, page2_text: str) -> bytes:
+    """Build a two-page PDF. Newlines in a page's text become drawn lines."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
-    c.drawString(72, 720, page1_text)
-    c.showPage()
-    c.drawString(72, 720, page2_text)
+    for i, page_text in enumerate((page1_text, page2_text)):
+        if i:
+            c.showPage()
+        for line_number, line in enumerate(page_text.split("\n")):
+            c.drawString(72, 720 - line_number * 14, line)
     c.save()
     return buf.getvalue()
 
@@ -37,12 +40,34 @@ class TestExtractDocumentChunks:
         assert "Page two text." in chunks[1].text
 
     def test_template_page_is_flagged(self) -> None:
+        # Page 2's marker sits past the 300-char boundary-context window, so
+        # it is not folded into page 1's chunk. Without that padding page 1's
+        # chunk would legitimately contain the marker and be flagged too --
+        # the flag now describes each chunk's own text, not its source page.
+        filler = "\n".join(
+            f"Filler line {i} of ordinary narrative content." for i in range(10)
+        )
+        pdf_bytes = _make_two_page_pdf(
+            "Normal narrative text.", f"{filler}\nCall [INSERT PHONE] for help."
+        )
+        chunks = extract_document_chunks("toolkit.pdf", pdf_bytes)
+
+        assert chunks[0].is_template_page is False
+        assert chunks[1].is_template_page is True
+
+    def test_neighbor_page_marker_flags_the_chunk_that_contains_it(self) -> None:
+        """A short template page bleeds its marker into its neighbor's chunk.
+
+        That chunk really does contain the marker, so flagging it True is
+        correct -- this is the false negative the per-chunk flag fixes.
+        """
         pdf_bytes = _make_two_page_pdf(
             "Normal narrative text.", "Call [INSERT PHONE] for help."
         )
         chunks = extract_document_chunks("toolkit.pdf", pdf_bytes)
 
-        assert chunks[0].is_template_page is False
+        assert "[INSERT PHONE]" in chunks[0].text
+        assert chunks[0].is_template_page is True
         assert chunks[1].is_template_page is True
 
 
