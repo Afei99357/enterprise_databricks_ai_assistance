@@ -66,15 +66,33 @@ many documents eventually land in the Volume.
 
 Per new document, per page:
 
-1. **Extract** — `pdfplumber.extract_text()` for the page's text, and
-   `page.extract_tables()` for any detected tables, rendered as markdown
-   tables and appended to the page's text. Tables get separated back out
-   for their own chunking treatment in step 3 — this step just produces one
-   combined markdown string per page, the raw material chunking works from.
+1. **Extract** — `pdfplumber.extract_text()` for the page's text.
+   **Revised 2026-08-14 (second revision):** an earlier version of this
+   step also called `page.extract_tables()` and appended a markdown
+   rendering of each detected table to the page's text, with chunking (in
+   step 3) then splitting the table back out into its own chunk. That
+   caused a real, unnecessary problem: `extract_text()` already includes
+   a table's cell text as part of the page's plain text (it doesn't
+   distinguish a table from prose, it just reads all visible text), so
+   appending a second, markdown-formatted rendering of the same table
+   meant every table's content was stored twice — once jumbled, once
+   clean — as two separate, independently-embedded, near-duplicate
+   chunks. Fixing that properly means filtering table regions out of the
+   plain-text pass (`page.filter()` against detected table bounding
+   boxes) so each fact appears exactly once — real, but non-trivial,
+   extraction-layer work. Given the actual documents tested so far don't
+   need table content to be independently searchable as a *distinct* unit
+   (the toolkit's own reference tables read fine as plain text), tables
+   are treated as ordinary page text for now — no special extraction, no
+   special chunking. Revisit if a real document's table content proves to
+   need dedicated handling.
 2. **Template-flag deterministically** — regex the extracted text for
    `[INSERT`-style bracket patterns to flag genuine fill-in-the-blank
    template pages. Same check as before, now against `pdfplumber` output
-   instead of OCR output — the regex itself doesn't change.
+   instead of OCR output — the regex itself doesn't change. Computed
+   against each chunk's actual text (including any folded-in boundary
+   context from step 3, not just the originating page's own raw text) —
+   see step 3's boundary-context note for why.
 3. **Chunk** — **revised 2026-08-14**, after comparing prior projects and
    researching current RAG chunking practice (see the implementation
    plan's Task 3 for the full reasoning). Recursive character splitting
@@ -83,25 +101,24 @@ Per new document, per page:
    semantic/embedding-similarity chunking outright, 69% vs. 54% accuracy),
    at a calibrated ~1,200-character target with ~150-character overlap
    between chunks (within the commonly-cited 200–500 token / 10–20%
-   overlap range), not the original one-chunk-per-page design. Two
-   refinements beyond plain recursive splitting:
-   - **Table-aware splitting.** A detected markdown table block is
-     separated from surrounding narrative text and chunked by row instead
-     of by paragraph, repeating the header + separator row in every
-     resulting chunk so a table chunk is always self-contained and
-     interpretable on its own, never a headerless fragment of rows.
-     `chunk_type` is now actively `body` or `table` (previously always
-     `body`).
-   - **Adjacent-page boundary context.** A real risk with per-page
-     chunking: a paragraph split by a page break becomes two separate,
-     independently-embedded fragments, and an isolated half-sentence can
-     embed poorly enough to rank below the top-k cutoff in search — never
-     getting selected at all, so retrieval's adjacent-page expansion
-     (§3) never even gets a chance to compensate. The fix: a small, fixed
-     slice of the adjacent page's text (~300 characters) is folded onto
-     the start/end of a page's text before chunking — not a new chunk,
-     not full-document concatenation, no paragraph-continuation detection
-     needed. Chunks stay attributed to a single `page_number`.
+   overlap range), not the original one-chunk-per-page design.
+   **Adjacent-page boundary context** addresses a real risk with per-page
+   chunking: a paragraph split by a page break becomes two separate,
+   independently-embedded fragments, and an isolated half-sentence can
+   embed poorly enough to rank below the top-k cutoff in search — never
+   getting selected at all, so retrieval's adjacent-page expansion (§3)
+   never even gets a chance to compensate. The fix: a small, fixed slice
+   of the adjacent page's text (~300 characters) is folded onto the
+   start/end of a page's text before chunking — not a new chunk, not
+   full-document concatenation, no paragraph-continuation detection
+   needed. Chunks stay attributed to a single `page_number`. Because that
+   folded-in text can itself contain a template marker from the
+   *neighboring* page, the template flag (step 2) is computed on the
+   actual boundary-folded text each chunk contains, not on the
+   originating page's raw text alone — computing it earlier and passing
+   a single page-level flag through was tried first and found to produce
+   both false positives and false negatives once boundary context was
+   added.
 4. **Embed** — call a text-embedding endpoint (Databricks Foundation Model
    API, `databricks-gte-large-en`) per chunk.
 5. **Store** — write chunks + embeddings + metadata to `document_chunks`
@@ -122,15 +139,15 @@ structured Gold table:
 | `chunk_id` | STRING (PK) | hash of document name + page + chunk type |
 | `document_name` | STRING | source filename |
 | `page_number` | INT | 1-indexed |
-| `chunk_type` | STRING | `body` \| `table` |
-| `text` | STRING | extracted markdown for this chunk |
+| `chunk_type` | STRING | `body` (only type for now — see §1 step 1) |
+| `text` | STRING | extracted text for this chunk |
 | `embedding` | ARRAY&lt;FLOAT&gt; | text-embedding vector |
 | `is_template_page` | BOOLEAN | from the deterministic regex check |
 | `ingested_at` | TIMESTAMP | |
 
-`chunk_type` is `table` for a chunk produced by the row-based table
-splitter (§1, step 3), `body` otherwise. Also keeps room for a future
-`figure_caption` (or similar) type if diagram handling is ever added back.
+`chunk_type` keeps room for a future `table` or `figure_caption` (or
+similar) type if dedicated table/diagram handling is ever added back —
+dropped from active use for now, not removed from the schema shape.
 
 ## 3. Retrieval
 
@@ -227,6 +244,18 @@ failure cases (not "not implemented" placeholders).
   `pdfplumber`). The agentic retrieval loop's `lookup_page` action is
   relied on instead, on a best-effort basis. Revisit if this proves
   insufficient in practice.
+- **Tables are not given dedicated extraction or chunking treatment.** An
+  earlier version of §1 step 1 rendered detected tables as markdown and
+  chunked them separately from surrounding text; this caused every
+  table's content to be stored twice (once as part of the page's plain
+  text, once as a markdown rendering) as two competing, near-duplicate
+  chunks. Rather than fix that properly (filtering table regions out of
+  the plain-text extraction pass), tables are treated as ordinary page
+  text for now — simpler, and the documents tested so far don't need a
+  table's content to be independently searchable as a distinct unit.
+  Revisit if a real document's table content proves to need dedicated
+  handling once retrieval (§3/§4) is actually built and tested against
+  real queries.
 - **Vector Search migration** — the `Retriever` interface exists specifically
   so this is a swap, not a rewrite, when/if the corpus grows enough to need
   a managed ANN index.
