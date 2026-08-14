@@ -25,6 +25,46 @@ def chunks_to_rows(chunks: list[EmbeddedChunk]) -> list[dict]:
     ]
 
 
+def _document_chunks_schema():
+    """The document_chunks DataFrame schema, matching the table's DDL exactly.
+
+    Spark's own inference would widen Python `int` to LongType (BIGINT)
+    and `float` to DoubleType, but the DDL in
+    resources/sql/create_document_chunks_table.sql declares
+    `page_number INT` and `embedding ARRAY<FLOAT>` -- narrowing
+    mismatches that Delta's schema enforcement rejects on append. Stating
+    the schema explicitly is what keeps the write compatible.
+
+    pyspark is imported lazily (same as Executor._execute_spark) because
+    it only exists inside a real Databricks/Spark runtime -- a
+    module-scope import would break every unit test that imports this
+    module.
+    """
+    from pyspark.sql.types import (
+        ArrayType,
+        BooleanType,
+        FloatType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("chunk_id", StringType(), nullable=False),
+            StructField("document_name", StringType(), nullable=False),
+            StructField("page_number", IntegerType(), nullable=False),
+            StructField("chunk_type", StringType(), nullable=False),
+            StructField("text", StringType(), nullable=False),
+            StructField("embedding", ArrayType(FloatType()), nullable=False),
+            StructField("is_template_page", BooleanType(), nullable=False),
+            StructField("ingested_at", TimestampType(), nullable=False),
+        ]
+    )
+
+
 def write_chunks(spark, chunks: list[EmbeddedChunk], catalog: str, schema: str) -> None:
     """Append embedded chunks to `<catalog>.<schema>.document_chunks`.
 
@@ -34,7 +74,12 @@ def write_chunks(spark, chunks: list[EmbeddedChunk], catalog: str, schema: str) 
     rows = chunks_to_rows(chunks)
     if not rows:
         return
-    df = spark.createDataFrame(rows)
+    # createDataFrame matches a dict row to the schema by field *name*
+    # (StructType.toInternal does obj.get(name)), so the field order here
+    # need not match chunks_to_rows' key order -- but the names must match
+    # exactly, or a missing name silently becomes a null and trips the
+    # NOT NULL constraint.
+    df = spark.createDataFrame(rows, schema=_document_chunks_schema())
     catalog_escaped = catalog.replace("`", "``")
     schema_escaped = schema.replace("`", "``")
     df.write.mode("append").saveAsTable(
