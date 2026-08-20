@@ -1,5 +1,5 @@
 resources:
-  serving_endpoints:
+  model_serving_endpoints:
     wnv_assistant:
       name: "wnv-assistant-${bundle.target}"
       config:
