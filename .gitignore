@@ -27,3 +27,6 @@ plan/
 rag_wip/
 # Subagent-driven-development scratch workspace (ledger, briefs, review packages).
 .superpowers/
+
+# Internal design specs/plans from the AI-assisted workflow -- not published.
+docs/superpowers/
