@@ -1,7 +1,17 @@
 # WNV Assistant
 
-Databricks demonstration combining Illinois county-level non-human West Nile
-virus surveillance and weather data with citation-based document retrieval.
+Databricks Lakeflow pipeline that ingests Illinois county-level non-human
+West Nile virus surveillance data from CSV through bronze, silver, and gold
+Delta layers on Unity Catalog.
+
+This repo previously also held a document-retrieval/text-to-SQL assistant
+built on top of this data. That assistant has been retired in favor of
+`wnv-genie-assistant`, a separate, lighter-weight Databricks App that answers
+analytics questions through a curated Genie Space instead — it queries the
+same gold tables this pipeline builds, but doesn't ingest or transform
+anything itself. This repo's scope is now just the pipeline: get source data
+reliably into Unity Catalog and let Genie (or anything else with the right
+grants) do the querying.
 
 ## Local validation
 

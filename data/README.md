@@ -15,7 +15,6 @@ been verified for every collected file.
 | `non_human/bird_illinois_county_02_to_22.csv` | `f82c0ff2baf59d05ae6243b10735221077c7531f4682463eeeee211f490b88fd` |
 | `non_human/horse_illinois_county_02_to_22.csv` | `422266d3adbec8d9a568e64e7c0def741db235366118a6a8b1318f4ffc651f1a` |
 | `non_human/mos_illinois_county_02_to_22.csv` | `36842541a49e4578988e12f9cac2ad4ec118037c475d3c4aef8fc0f4ba95ce51` |
-| `documents/WNV-Outbreak-Communications-Toolkit-2025_508c.pdf` | `424371b46f36085b722ddb074936f6ff7085c2ba9906783046a7fcc38ca6ce70` |
 | `non_human_data_2002_2017_monthly_aggregated_by_county.csv` | `3f26073c6c84980d957ddd66eff9c07ec3532192d49b9151c415d0ed768c4087` |
 | `non_human_data_2002_2017_monthly_climate.csv` | `e9652fc4fc3f7e3be9dffe44f0cacea2e784ec809bf5590152693b10db92f898` |
 
